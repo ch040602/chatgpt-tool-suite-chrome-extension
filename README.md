@@ -1,55 +1,92 @@
-# ChatGPT Long Chat Loader
+# ChatGPT Long Chat Loader v0.3.0
 
-ChatGPT의 긴 대화 페이지에서 초기 로딩과 스크롤 지연을 줄이기 위한 Chrome MV3 확장입니다.
+[English](README.md) | [한국어](README.ko.md)
 
-## 문제 원인 분석
+Chrome MV3 extension for reducing ChatGPT long-conversation loading, rendering, and RAM pressure.
 
-1. 긴 대화는 `/backend-api/conversation/...` 응답 안에 많은 `mapping` 노드를 포함합니다.
-2. ChatGPT 웹 앱은 이 데이터를 받은 뒤 React UI로 메시지 DOM을 생성합니다. 메시지가 많아질수록 JSON 파싱, React reconciliation, markdown/code 렌더링, DOM 생성, layout/reflow 비용이 누적됩니다.
-3. 단순히 CSS로 오래된 메시지를 숨기는 방식은 스크롤 지연은 줄이지만, 이미 React가 모든 메시지를 렌더링한 뒤라 초기 로딩 문제를 완전히 해결하지 못합니다.
-4. 따라서 가장 큰 효과는 “페이지 앱이 렌더링하기 전에” conversation API 응답을 줄이고, 이후 필요할 때만 더 보이게 하는 방식입니다.
+## Problem cause
 
-## 해결 방법 목록
+Long ChatGPT conversations can become slow because the browser receives a large conversation graph, parses it into JavaScript objects, lets the ChatGPT React app build state for old messages, and then keeps many Markdown/code/tool DOM nodes alive. Hiding old DOM after the fact helps scrolling, but the larger improvement comes from shrinking the conversation response before React ingests it.
 
-| 방법 | 효과 | 위험/한계 | 구현 여부 |
-|---|---:|---|---|
-| 오래된 DOM 메시지 숨김 | 중간 | 초기 React 렌더링 이후에 동작 | 구현 |
-| `Load more` 버튼으로 과거 메시지 점진 표시 | 중간 | 숨겨진 DOM 범위까지만 가능 | 구현 |
-| `window.fetch`를 MAIN world에서 패치해 conversation 응답 trim | 높음 | ChatGPT 내부 API 구조 변경 시 수정 필요 | 구현 |
-| 최근 conversation 응답 메모리 캐시 | 중간 | 탭 새로고침 시 초기화 | 구현 |
-| “전체 대화 로드” 우회 버튼 | 안정성 | 전체 로드 시 다시 느려질 수 있음 | 구현 |
+## What this extension does
 
-## 구현 구조
+1. Patches `window.fetch` in the page MAIN world at `document_start`.
+2. Intercepts `GET /backend-api/conversation/<id>` and `GET /backend-api/f/conversation/<id>` JSON responses.
+3. Keeps only the current conversation chain tail before ChatGPT React consumes it.
+4. Drops old visible user/assistant nodes and old tool nodes before the cutoff while preserving root/system/developer scaffolding.
+5. Keeps old DOM turns hidden behind a `Load more` control when the full DOM is already present.
+6. Applies `content-visibility:auto` to visible turns where supported.
+7. Calculates estimated speedup only when the extension popup is opened.
+
+## v0.3.0 changes after live page check
+
+The public `https://chatgpt.com/` and `/c/<uuid>` shells load with a login/new-chat shell even without an authenticated conversation. Based on that check, v0.3.0 reduces work on non-chat routes and improves compatibility:
+
+- Route-aware observer: active on `/`, `/c/...`, `/share/...`, and `/g/...`; disabled on non-chat pages such as app/gallery pages.
+- MAIN-world `history.pushState`/`replaceState` patch dispatches route-change events, reducing reliance on frequent polling.
+- Polling fallback relaxed to 3 seconds.
+- Primary DOM selector widened to `[data-testid^="conversation-turn-"]` instead of assuming only `section`.
+- Conversation endpoint matcher now also supports `/backend-api/f/conversation/<id>`.
+- Non-JSON response types are not read or parsed.
+- Old tool messages before the retained tail are no longer counted as renderable messages and are dropped unless they are inside the retained tail.
+- Status badge is off by default.
+
+## Default settings
+
+| Setting | Default |
+|---|---:|
+| Recent turns | 4 |
+| Load-more batch | 4 |
+| API prefetch batches | 2 |
+| API response body cache | 0 |
+| CSS containment | On |
+| Status badge | Off |
+
+With defaults, the API tail keeps roughly:
 
 ```text
-manifest.json     Chrome MV3 설정
-mainWorld.js      ChatGPT 페이지의 fetch를 MAIN world에서 패치, API 응답 trim
-content.js        DOM 메시지 windowing, Load more 버튼, 상태 배지
-content.css       숨김/버튼/배지 스타일
-popup.html/js     설정 UI
+recent turns * 2 + load-more batch * prefetch batches * 2
+= 4 * 2 + 4 * 2 * 2
+= 24 renderable user/assistant messages
 ```
 
-## 설치
+## Popup-only estimated speedup
 
-1. 이 폴더를 압축 해제합니다.
-2. Chrome 주소창에서 `chrome://extensions`를 엽니다.
-3. 오른쪽 위의 “개발자 모드”를 켭니다.
-4. “압축해제된 확장 프로그램을 로드합니다”를 누릅니다.
-5. 이 폴더 `chatgpt-long-chat-loader`를 선택합니다.
-6. `https://chatgpt.com`에서 긴 대화를 열고 확장 아이콘의 설정을 조정합니다.
+The extension does not continuously calculate speedup on the page. When the popup opens, it requests a one-time snapshot from the active tab and estimates improvement from:
 
-## 기본 설정
+- API message reduction
+- API JSON size reduction, using string length to avoid extra `TextEncoder`/`Blob` buffers
+- hidden DOM turn ratio
+- `content-visibility` support
+- JS heap, when Chromium exposes `performance.memory`
 
-- 처음 표시할 최근 턴: 6
-- 더 보기 배치: 6
-- API 사전 보관 배치: 10
-- API 응답 줄이기: 켜짐
+This is an estimate, not a controlled benchmark.
 
-API trim은 “최근 표시 턴 + 더 보기 배치 × 사전 보관 배치”만 conversation 응답에 남깁니다. 숨겨진 DOM 메시지를 모두 더 본 뒤에도 과거 대화가 더 필요하면 페이지 상단의 “전체 대화 로드하기” 버튼을 누르면 한 번만 trim 없이 새로고침합니다.
+## GPU and RAM notes
 
-## 주의 사항
+- The extension does not force `will-change`, `translateZ(0)`, or layer promotion. For text-heavy long chats, forced layer creation can increase GPU memory and layer-management overhead.
+- The extension cannot toggle Chrome hardware acceleration. Check `chrome://gpu` manually if GPU compositing is suspected.
+- The most important RAM reduction is avoiding full React state/DOM creation for old messages during conversation load.
+- A JSON response must still be read and parsed once to rewrite it. That peak cannot be fully eliminated from an extension that rewrites `fetch` responses.
 
-- 이 확장은 메시지 본문을 외부로 전송하지 않습니다. 설정은 `chrome.storage.local`과 페이지 로컬 브리지에만 저장됩니다.
-- ChatGPT 웹의 내부 API/DOM 구조가 바뀌면 selector 또는 trim 로직을 수정해야 할 수 있습니다.
-- 전체 대화 검색, 아주 오래된 메시지 편집, 과거 branch 탐색이 필요하면 “전체 대화 로드하기”를 사용하세요.
-- ChatGPT 서버가 모델에 사용하는 실제 대화 맥락을 줄이는 도구가 아닙니다. 브라우저 UI의 로딩과 렌더링 부담을 줄이는 도구입니다.
+## Install
+
+1. Unzip this package.
+2. Open `chrome://extensions`.
+3. Enable Developer mode.
+4. Click **Load unpacked**.
+5. Select the `chatgpt-long-chat-loader-v0.3.0` folder.
+6. Open a long conversation on `https://chatgpt.com`.
+7. Click the extension icon to view the current-tab estimate and settings.
+
+## Limitations
+
+- Authenticated long-conversation E2E testing is required for final performance numbers.
+- ChatGPT internal DOM/API changes may require selector or endpoint updates.
+- Full-history search, old message editing, and old branch navigation require the `전체 대화 로드하기` bypass.
+- Server-side model context is not reduced; only browser UI loading/rendering pressure is reduced.
+- Shared chats may use different delivery paths; DOM windowing may still help, but API trim is not guaranteed there.
+
+## Privacy
+
+No message content is sent to an external server. Settings are stored in `chrome.storage.local` and bridged to the page via `localStorage` for MAIN-world access.
