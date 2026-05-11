@@ -1,18 +1,20 @@
-# ChatGPT Long Chat Loader v0.5.0
+# ChatGPT Long Chat Loader v0.6.0
 
 [한국어 README](README.ko.md)
 
 Chrome MV3 extension for reducing ChatGPT long-conversation loading, rendering, and RAM pressure.
 
-## What changed in v0.5.0
+## What changed in v0.6.0
 
-This release fixes three user-facing issues found in v0.4.1:
+This release fixes the long-running case where the load-more / full-load button could disappear after the tab stayed open for several minutes.
 
-1. **Micro-cache default is forced back to 1.** Existing stored values such as `apiCacheEntries: 0` are normalized and written back to `chrome.storage.local` when the popup opens.
-2. **Popup estimates recover when the content script was not injected.** The popup now uses `activeTab` + `scripting` as a fallback. If the active ChatGPT tab was already open before the extension was installed or updated, clicking the popup injects `content.js` and `content.css`, then recalculates the metrics.
-3. **Load-more is more visible.** The load-more control is now inserted as a body-level floating button. This avoids cases where ChatGPT's message container, flex layout, virtual scroll wrapper, or clipped parent hides the button.
+1. **Trim state is now separate from the response micro-cache.** Cache entries and detailed API stats can still expire, but a lightweight per-route trim marker is retained in `sessionStorage` for up to 6 hours.
+2. **Cache cleanup no longer removes the full-load affordance.** Maintenance can clear cache bodies and stale root attributes without making the extension forget that the current conversation was API-trimmed.
+3. **Transient zero-message scans are tolerated.** If ChatGPT temporarily replaces the scroll root or re-renders while streaming, the full-load button is not hidden solely because a scan found zero turns.
+4. **The v0.6 button uses a versioned DOM id.** This avoids some conflicts with an older injected v0.5 button in tabs that were open during an extension update.
+5. **Popup diagnostics now show trim-state source.** The popup reports whether trim state is live/recent or restored from the session marker.
 
-The popup also reports the detected content-script version, MAIN-world API patch version, load-more state, micro-cache settings, DOM count, and popup-only estimated speedup.
+The popup also reports the detected content-script version, MAIN-world API patch version, load-more state, trim-state source, micro-cache settings, DOM count, and popup-only estimated speedup.
 
 ## Problem cause
 
@@ -26,9 +28,10 @@ Long ChatGPT conversations can become slow because the browser receives a large 
 4. Drops old visible user/assistant nodes and old tool nodes before the cutoff while preserving root/system/developer scaffolding.
 5. Uses a bounded one-entry micro-cache by default instead of a zero-cache or unbounded body cache.
 6. Keeps old DOM turns hidden behind a floating `Load more` control when the full DOM is already present.
-7. Applies `content-visibility:auto` to visible turns where supported.
-8. Runs a lightweight periodic maintenance pass while a chat page is visible.
-9. Calculates estimated speedup only when the extension popup is opened.
+7. Preserves a lightweight trim marker so the `Load full conversation` button remains available after cache/stat cleanup.
+8. Applies `content-visibility:auto` to visible turns where supported.
+9. Runs a lightweight periodic maintenance pass while a chat page is visible.
+10. Calculates estimated speedup only when the extension popup is opened.
 
 ## Cache policy
 
@@ -43,13 +46,27 @@ Long ChatGPT conversations can become slow because the browser receives a large 
 
 The cache stores only the trimmed response body, not the original full conversation body. The configured cache size is never normalized below 1, but the runtime cache map can still be temporarily empty after route changes, TTL expiry, memory pressure, or when a trimmed body exceeds the size limit.
 
+## Trim-state marker
+
+The load-more/full-load button must not depend on cache bodies. In v0.6.0, the extension stores a small per-route marker in `sessionStorage` after an API response is trimmed. The marker contains only counts, timestamps, and the route key; it does not contain message text.
+
+The marker is removed when:
+
+- the route changes to a different conversation,
+- API trim is disabled,
+- the user clicks `Load full conversation`, or
+- the marker is older than 6 hours.
+
+This means maintenance can safely clear the micro-cache and stale DOM attributes without removing the full-load button.
+
 ## Maintenance behavior during a long chat
 
 - New messages are handled by `MutationObserver` and a throttled scan.
 - A visible chat tab runs a maintenance pass every 30 seconds by default.
 - Maintenance prunes the bounded response micro-cache by count, TTL, body size, and memory pressure.
 - Maintenance re-applies DOM windowing so long chats keep the same visible tail after new turns are appended.
-- Maintenance clears stale API-trim stats so popup estimates do not use old conversation data.
+- Maintenance clears stale detailed API-trim stats so popup estimates do not use old conversation data.
+- The lightweight trim marker remains available after detailed stats are cleared.
 - The loop is disabled when the tab is hidden or when the current route is not a likely chat surface.
 
 The extension does not delete ChatGPT-owned React DOM nodes because removing nodes owned by React can break hydration, branch navigation, editing, and scroll restoration. The safer approach is to avoid creating old nodes through API trim, then hide or contain existing nodes when the full DOM is already present.
@@ -80,9 +97,11 @@ This is an estimate, not a controlled benchmark.
 2. Open `chrome://extensions`.
 3. Enable Developer mode.
 4. Click **Load unpacked**.
-5. Select the `chatgpt-long-chat-loader-v0.5.0` folder.
+5. Select the `chatgpt-long-chat-loader-v0.6.0` folder.
 6. Open or reload a long conversation on `https://chatgpt.com`.
 7. Click the extension icon to view the current-tab estimate and settings.
+
+After updating from an older build, reload the ChatGPT tab. Existing tabs may still have an older content script or MAIN-world fetch patch in memory until the page reloads.
 
 If the popup reports `API patch: missing`, reload the ChatGPT tab. The DOM optimizer and estimate fallback can be injected into an already-open tab, but the early MAIN-world fetch patch works best after a page reload.
 
@@ -96,4 +115,4 @@ If the popup reports `API patch: missing`, reload the ChatGPT tab. The DOM optim
 
 ## Privacy
 
-No message content is sent to an external server. Settings are stored in `chrome.storage.local` and bridged to the page via `localStorage` for MAIN-world access.
+No message content is sent to an external server. Settings are stored in `chrome.storage.local`; a small trim marker with counts/timestamps is stored in tab-scoped `sessionStorage`; and settings are bridged to the page via `localStorage` for MAIN-world access.

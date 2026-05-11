@@ -24,6 +24,10 @@
   const refreshMetrics = document.getElementById("refreshMetrics");
   const openReadme = document.getElementById("openReadme");
   const openReadmeKo = document.getElementById("openReadmeKo");
+  const README_URLS = Object.freeze({
+    en: "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.md",
+    ko: "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.ko.md"
+  });
 
   document.addEventListener("DOMContentLoaded", init);
 
@@ -40,8 +44,8 @@
     }
 
     if (refreshMetrics) refreshMetrics.addEventListener("click", requestMetricsOnce);
-    if (openReadme) openReadme.addEventListener("click", () => openExtensionPage("README.md"));
-    if (openReadmeKo) openReadmeKo.addEventListener("click", () => openExtensionPage("README.ko.md"));
+    if (openReadme) openReadme.addEventListener("click", () => openExternalPage(README_URLS.en));
+    if (openReadmeKo) openReadmeKo.addEventListener("click", () => openExternalPage(README_URLS.ko));
 
     requestMetricsOnce();
   }
@@ -257,6 +261,7 @@
     appendMetricLine("API 크기(추정)", formatApiSize(metrics.api));
     appendMetricLine("DOM 메시지", formatDom(metrics.dom));
     appendMetricLine("더보기 버튼", formatLoadMore(metrics.loadMore));
+    appendMetricLine("Trim 상태", formatTrimState(metrics.trimState));
     appendMetricLine("응답 micro-cache", formatCache(metrics));
     appendMetricLine("API patch", formatApiPatch(metrics));
     appendMetricLine("CSS containment", formatCss(metrics));
@@ -371,7 +376,15 @@
     if (!loadMore || !loadMore.inDom) return "없음";
     if (!loadMore.visible) return "숨김";
     const mode = loadMore.mode === "full" ? "전체 로드" : loadMore.mode === "more" ? "더보기" : loadMore.mode;
-    return `${mode} · ${loadMore.reason || "표시"}`;
+    const placement = loadMore.placement && loadMore.placement !== "none" ? ` · ${loadMore.placement}` : "";
+    return `${mode} · ${loadMore.reason || "표시"}${placement}`;
+  }
+
+  function formatTrimState(trimState) {
+    if (!trimState || !trimState.active) return "없음";
+    const source = trimState.statsSource === "session-marker" ? "marker" : trimState.statsSource === "live-or-recent" ? "live" : trimState.statsSource || "active";
+    const age = positiveNumber(trimState.ageSec) ? ` · ${formatNumber(trimState.ageSec)}초` : "";
+    return `${trimState.remembered ? "보존됨" : "감지됨"} · ${source}${age}`;
   }
 
   function formatCss(metrics) {
@@ -438,8 +451,7 @@
     }
   }
 
-  function openExtensionPage(path) {
-    const url = chrome.runtime.getURL(path);
+  function openExternalPage(url) {
     chrome.tabs.create({ url });
   }
 })();

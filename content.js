@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "0.5.0";
-  const CONTENT_BOOT_FLAG = "__CGPT_LONG_CHAT_LOADER_CONTENT_ACTIVE__";
+  const CONTENT_VERSION = "0.6.0";
+  const CONTENT_BOOT_FLAG = "__CGPT_LONG_CHAT_LOADER_CONTENT_ACTIVE_V060__";
   if (window[CONTENT_BOOT_FLAG]) {
     try {
       window.dispatchEvent(new CustomEvent("cgpt-lb-force-scan", { detail: CONTENT_VERSION }));
@@ -25,8 +25,12 @@
   const MAINTENANCE_EVENT = "cgpt-lb-maintenance";
   const HIDDEN_CLASS = "cgpt-lb-hidden";
   const CONTAINED_CLASS = "cgpt-lb-contained";
-  const LOAD_MORE_ID = "cgpt-lb-load-more";
+  const LOAD_MORE_ID = "cgpt-lb-load-more-v060";
+  const LEGACY_LOAD_MORE_ID = "cgpt-lb-load-more";
   const STATUS_ID = "cgpt-lb-status";
+  const TRIM_MARKER_KEY = "cgptLongChatLoader.trimMarkers.v1";
+  const TRIM_MARKER_TTL_MS = 6 * 60 * 60 * 1000;
+  const MAX_TRIM_MARKERS = 20;
   const TURN_SELECTOR = [
     '[data-testid^="conversation-turn-"]',
     '[data-testid*="conversation-turn"]',
@@ -65,6 +69,7 @@
   let extraVisibleMessages = 0;
   let apiTrimmedCurrentConversation = false;
   let lastApiStats = null;
+  let trimmedRouteKey = null;
   let lastUrl = location.href;
   let lastDomMetrics = { total: 0, hidden: 0, visible: 0 };
   let scanScheduled = false;
@@ -80,12 +85,13 @@
   let lastMaintenanceAt = 0;
   let pendingRelevantMutations = 0;
   let lastObservedTurnTotal = 0;
-  let lastLoadMoreState = { visible: false, mode: "none", hiddenCount: 0, reason: "init" };
+  let lastLoadMoreState = { visible: false, mode: "none", hiddenCount: 0, reason: "init", placement: "none" };
 
   boot();
 
   async function boot() {
     settings = await loadSettings();
+    hydrateTrimStateFromStorage();
     writeSettingsBridge();
     listenForSettingsChanges();
     listenForPopupMetrics();
@@ -190,6 +196,8 @@
       }
       if (!changed) return;
       settings = normalizeSettings(next);
+      if (!settings.apiTrimEnabled) clearTrimMarkerForCurrentRoute();
+      else hydrateTrimStateFromStorage();
       writeSettingsBridge();
       ensureObserverTarget();
       restartMaintenanceLoop();
@@ -284,9 +292,20 @@
   }
 
   function compactVolatileState() {
-    if (lastApiStats && (!statsApplyToThisPage(lastApiStats) || isStaleTimestamp(lastApiStats.timestamp, 180_000))) {
+    if (!settings.apiTrimEnabled) {
+      clearTrimMarkerForCurrentRoute();
+    } else if (lastApiStats && !statsApplyToThisPage(lastApiStats)) {
       lastApiStats = null;
       apiTrimmedCurrentConversation = false;
+      trimmedRouteKey = null;
+    } else if (lastApiStats && isStaleTimestamp(lastApiStats.timestamp, 180_000)) {
+      // Stale detailed stats should not drive popup estimates forever, but the
+      // lightweight "this route was API-trimmed" marker must remain. Otherwise
+      // the full-load button disappears a few minutes after cache/stat cleanup.
+      lastApiStats = null;
+      hydrateTrimStateFromStorage();
+    } else if (!apiTrimmedCurrentConversation) {
+      hydrateTrimStateFromStorage();
     }
 
     const currentTotal = lastDomMetrics.total || queryMessageTurns().length || 0;
@@ -307,9 +326,11 @@
     lastUrl = location.href;
     extraVisibleMessages = 0;
     apiTrimmedCurrentConversation = false;
+    trimmedRouteKey = null;
     lastApiStats = null;
     lastDomMetrics = { total: 0, hidden: 0, visible: 0 };
     hideLoadMore();
+    hydrateTrimStateFromStorage();
     ensureObserverTarget();
     scheduleScan(true);
     scheduleMaintenance("navigation");
@@ -414,13 +435,19 @@
 
     const stats = readApiStatsFromRoot();
     if (statsApplyToThisPage(stats)) {
-      lastApiStats = stats || lastApiStats;
-      if (stats && stats.trimmed === false) apiTrimmedCurrentConversation = false;
+      if (stats && stats.trimmed) {
+        rememberTrimState(stats);
+      } else if (stats && stats.trimmed === false) {
+        clearTrimMarkerForCurrentRoute();
+        lastApiStats = stats;
+      }
     }
 
     if (root.hasAttribute(TRIMMED_ATTR)) {
-      apiTrimmedCurrentConversation = true;
+      rememberTrimState(stats && stats.trimmed ? stats : { trimmed: true, timestamp: Date.now(), pageUrl: location.href });
       root.removeAttribute(TRIMMED_ATTR);
+    } else if (!apiTrimmedCurrentConversation && settings.apiTrimEnabled) {
+      hydrateTrimStateFromStorage();
     }
   }
 
@@ -433,9 +460,17 @@
   function readApiStats() {
     const fromRoot = readApiStatsFromRoot();
     if (statsApplyToThisPage(fromRoot)) {
-      lastApiStats = fromRoot || lastApiStats;
+      if (fromRoot && fromRoot.trimmed) rememberTrimState(fromRoot);
+      else if (fromRoot && fromRoot.trimmed === false) {
+        clearTrimMarkerForCurrentRoute();
+        lastApiStats = fromRoot;
+      }
     }
-    return lastApiStats && statsApplyToThisPage(lastApiStats) ? { ...lastApiStats } : null;
+    if (lastApiStats && statsApplyToThisPage(lastApiStats) && !isStaleTimestamp(lastApiStats.timestamp, 180_000)) {
+      return { ...lastApiStats };
+    }
+    const marker = getTrimMarkerForCurrentRoute();
+    return marker && marker.stats ? { ...marker.stats, markerOnly: true, timestamp: marker.timestamp } : null;
   }
 
   function parseStats(raw) {
@@ -449,7 +484,129 @@
   }
 
   function statsApplyToThisPage(stats) {
-    return !stats || !stats.pageUrl || stats.pageUrl === location.href;
+    if (!stats) return true;
+    if (!stats.pageUrl) return true;
+    return normalizeRouteKey(stats.pageUrl) === currentRouteKey();
+  }
+
+  function currentRouteKey() {
+    return normalizeRouteKey(location.href);
+  }
+
+  function normalizeRouteKey(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      return `${parsed.origin}${parsed.pathname}`;
+    } catch {
+      return String(url || "").split(/[?#]/)[0];
+    }
+  }
+
+  function rememberTrimState(stats) {
+    if (!settings.apiTrimEnabled) return;
+    const routeKey = currentRouteKey();
+    const compact = compactTrimStats(stats);
+    compact.pageUrl = location.href;
+    compact.timestamp = Date.now();
+    lastApiStats = { ...compact };
+    apiTrimmedCurrentConversation = true;
+    trimmedRouteKey = routeKey;
+    putTrimMarker(routeKey, { routeKey, pageUrl: location.href, timestamp: compact.timestamp, stats: compact });
+    debug("trim marker remembered", routeKey);
+  }
+
+  function compactTrimStats(stats) {
+    const source = stats && typeof stats === "object" ? stats : {};
+    return {
+      trimmed: Boolean(source.trimmed),
+      totalRenderableMessages: numberOrNull(source.totalRenderableMessages),
+      keptRenderableMessages: numberOrNull(source.keptRenderableMessages),
+      totalVisibleMessages: numberOrNull(source.totalVisibleMessages),
+      keptVisibleMessages: numberOrNull(source.keptVisibleMessages),
+      totalMappingNodes: numberOrNull(source.totalMappingNodes),
+      keptMappingNodes: numberOrNull(source.keptMappingNodes),
+      originalChars: numberOrNull(source.originalChars || source.originalBytes),
+      trimmedChars: numberOrNull(source.trimmedChars || source.trimmedBytes),
+      originalBytes: numberOrNull(source.originalBytes || source.originalChars),
+      trimmedBytes: numberOrNull(source.trimmedBytes || source.trimmedChars),
+      keepRenderableMessages: numberOrNull(source.keepRenderableMessages || source.keepVisibleMessages),
+      keepVisibleMessages: numberOrNull(source.keepVisibleMessages || source.keepRenderableMessages),
+      cacheHit: Boolean(source.cacheHit),
+      cacheEligible: source.cacheEligible === false ? false : Boolean(source.cacheEligible),
+      cacheStored: Boolean(source.cacheStored),
+      cacheMaxKb: numberOrNull(source.cacheMaxKb),
+      markerOnly: Boolean(source.markerOnly)
+    };
+  }
+
+  function hydrateTrimStateFromStorage() {
+    if (!settings.apiTrimEnabled) return false;
+    const marker = getTrimMarkerForCurrentRoute();
+    if (!marker) return false;
+    apiTrimmedCurrentConversation = true;
+    trimmedRouteKey = marker.routeKey || currentRouteKey();
+    if (!lastApiStats && marker.stats) lastApiStats = { ...marker.stats, markerOnly: true, timestamp: marker.timestamp };
+    return true;
+  }
+
+  function getTrimMarkerForCurrentRoute() {
+    const routeKey = currentRouteKey();
+    const markers = readTrimMarkers();
+    const marker = markers[routeKey];
+    if (!marker || isStaleTimestamp(marker.timestamp, TRIM_MARKER_TTL_MS)) {
+      if (marker) {
+        delete markers[routeKey];
+        writeTrimMarkers(markers);
+      }
+      if (trimmedRouteKey === routeKey) {
+        apiTrimmedCurrentConversation = false;
+        trimmedRouteKey = null;
+      }
+      return null;
+    }
+    return marker;
+  }
+
+  function putTrimMarker(routeKey, marker) {
+    const markers = readTrimMarkers();
+    markers[routeKey] = marker;
+    const entries = Object.entries(markers)
+      .filter(([, value]) => value && !isStaleTimestamp(value.timestamp, TRIM_MARKER_TTL_MS))
+      .sort((a, b) => Number(b[1].timestamp || 0) - Number(a[1].timestamp || 0))
+      .slice(0, MAX_TRIM_MARKERS);
+    writeTrimMarkers(Object.fromEntries(entries));
+  }
+
+  function clearTrimMarkerForCurrentRoute() {
+    const routeKey = currentRouteKey();
+    const markers = readTrimMarkers();
+    if (markers[routeKey]) {
+      delete markers[routeKey];
+      writeTrimMarkers(markers);
+    }
+    if (!trimmedRouteKey || trimmedRouteKey === routeKey) {
+      apiTrimmedCurrentConversation = false;
+      trimmedRouteKey = null;
+      lastApiStats = null;
+    }
+  }
+
+  function readTrimMarkers() {
+    try {
+      const raw = sessionStorage.getItem(TRIM_MARKER_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeTrimMarkers(markers) {
+    try {
+      sessionStorage.setItem(TRIM_MARKER_KEY, JSON.stringify(markers || {}));
+    } catch {
+      // If sessionStorage is unavailable or full, keep the in-memory marker only.
+    }
   }
 
   function getMessageScope() {
@@ -528,7 +685,7 @@
     if (!containsWithinScope(scope, el)) return false;
     if (el.closest("nav, aside, header, footer, [data-testid='conversation-sidebar']")) return false;
     if (el.matches("nav, aside, header, footer")) return false;
-    if (el.id === LOAD_MORE_ID || el.id === STATUS_ID) return false;
+    if (el.id === LOAD_MORE_ID || el.id === LEGACY_LOAD_MORE_ID || el.id === STATUS_ID) return false;
 
     const testId = String(el.getAttribute("data-testid") || "");
     if (testId.includes("conversation-turn")) return true;
@@ -577,19 +734,33 @@
   }
 
   function isExtensionUi(el) {
-    return Boolean(el && el.closest && el.closest(`#${LOAD_MORE_ID}, #${STATUS_ID}`));
+    return Boolean(el && el.closest && el.closest(`#${LOAD_MORE_ID}, #${LEGACY_LOAD_MORE_ID}, #${STATUS_ID}`));
   }
 
   function applyVisibility(turns) {
     ensureUi();
     const total = turns.length;
 
-    if (!settings.enabled || total === 0) {
+    if (!settings.enabled) {
       for (const el of turns) {
         removeContainment(el);
         showElement(el);
       }
       hideLoadMore();
+      updateStatus(0, total);
+      lastDomMetrics = { total, hidden: 0, visible: total };
+      return;
+    }
+
+    if (total === 0) {
+      // A transient zero-turn scan can happen while ChatGPT is re-rendering, streaming,
+      // or replacing the scroll root. Do not lose the full-load affordance merely
+      // because the lightweight cache/stat cleanup removed the root attribute.
+      if (settings.apiTrimEnabled && (apiTrimmedCurrentConversation || hydrateTrimStateFromStorage())) {
+        updateLoadMore(0, []);
+      } else {
+        hideLoadMore();
+      }
       updateStatus(0, total);
       lastDomMetrics = { total, hidden: 0, visible: total };
       return;
@@ -644,6 +815,7 @@
   }
 
   function ensureUi() {
+    removeLegacyLoadMoreButton();
     if (!loadMoreButton || !document.documentElement.contains(loadMoreButton)) {
       loadMoreButton = document.createElement("button");
       loadMoreButton.id = LOAD_MORE_ID;
@@ -671,6 +843,17 @@
     statusBadge = null;
   }
 
+  function removeLegacyLoadMoreButton() {
+    const legacy = document.getElementById(LEGACY_LOAD_MORE_ID);
+    if (legacy && legacy !== loadMoreButton) {
+      try {
+        legacy.remove();
+      } catch {
+        // Non-critical cleanup.
+      }
+    }
+  }
+
   function updateLoadMore(hiddenCount, turns) {
     if (!loadMoreButton) return;
 
@@ -681,7 +864,7 @@
       const batchCount = Math.min(hiddenCount, settings.loadMoreBatch * 2);
       loadMoreButton.dataset.mode = "more";
       loadMoreButton.textContent = `이전 메시지 ${batchCount}개 더 보기 · 숨김 ${hiddenCount}개`;
-      lastLoadMoreState = { visible: true, mode: "more", hiddenCount, reason: "hidden-dom" };
+      lastLoadMoreState = { visible: true, mode: "more", hiddenCount, reason: "hidden-dom", placement: "pending" };
       loadMoreButton.onclick = () => {
         extraVisibleMessages += settings.loadMoreBatch * 2;
         scanAndApply();
@@ -693,11 +876,13 @@
       return;
     }
 
-    if (apiTrimmedCurrentConversation && settings.apiTrimEnabled) {
+    if (settings.apiTrimEnabled && (apiTrimmedCurrentConversation || hydrateTrimStateFromStorage())) {
       loadMoreButton.dataset.mode = "full";
       loadMoreButton.textContent = "전체 대화 로드하기 · 느려질 수 있음";
-      lastLoadMoreState = { visible: true, mode: "full", hiddenCount: 0, reason: "api-trimmed" };
+      lastLoadMoreState = { visible: true, mode: "full", hiddenCount: 0, reason: "api-trimmed", placement: "pending" };
       loadMoreButton.onclick = () => {
+        clearTrimMarkerForCurrentRoute();
+        lastApiStats = null;
         try {
           localStorage.setItem(BYPASS_KEY, "true");
         } catch {
@@ -724,7 +909,7 @@
       loadMoreButton.hidden = false;
       loadMoreButton.removeAttribute("hidden");
       lastLoadMoreState.visible = true;
-      lastLoadMoreState.reason = "body-floating";
+      lastLoadMoreState.placement = "body-floating";
       return;
     }
 
@@ -735,7 +920,7 @@
       loadMoreButton.hidden = false;
       loadMoreButton.removeAttribute("hidden");
       lastLoadMoreState.visible = true;
-      lastLoadMoreState.reason = "fallback-prepend";
+      lastLoadMoreState.placement = "fallback-prepend";
       return;
     }
 
@@ -746,7 +931,7 @@
     loadMoreButton.hidden = false;
     loadMoreButton.removeAttribute("hidden");
     lastLoadMoreState.visible = true;
-    lastLoadMoreState.reason = "inline";
+    lastLoadMoreState.placement = "inline";
   }
 
   function hideLoadMore() {
@@ -754,7 +939,7 @@
       loadMoreButton.hidden = true;
       loadMoreButton.setAttribute("hidden", "");
     }
-    lastLoadMoreState = { visible: false, mode: "none", hiddenCount: 0, reason: "hidden" };
+    lastLoadMoreState = { visible: false, mode: "none", hiddenCount: 0, reason: "hidden", placement: "none" };
   }
 
   function updateStatus(hiddenCount, total) {
@@ -808,6 +993,7 @@
       settings: { ...settings },
       dom: { ...lastDomMetrics, nodes: countDomNodes() },
       api: readApiStats(),
+      trimState: getTrimStateForPopup(),
       memory: getMemorySnapshot(),
       css: {
         contentVisibilitySupported: Boolean(window.CSS && CSS.supports && CSS.supports("content-visibility", "auto"))
@@ -829,6 +1015,17 @@
         text: loadMoreButton && !loadMoreButton.hidden ? loadMoreButton.textContent : ""
       },
       timestamp: Date.now()
+    };
+  }
+
+  function getTrimStateForPopup() {
+    const marker = getTrimMarkerForCurrentRoute();
+    return {
+      active: Boolean(apiTrimmedCurrentConversation || marker),
+      routeKey: currentRouteKey(),
+      remembered: Boolean(marker),
+      ageSec: marker && marker.timestamp ? Math.max(0, Math.round((Date.now() - Number(marker.timestamp)) / 1000)) : null,
+      statsSource: lastApiStats ? "live-or-recent" : marker ? "session-marker" : "none"
     };
   }
 
