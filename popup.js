@@ -5,13 +5,14 @@
     enabled: true,
     apiTrimEnabled: true,
     safeNetworkMode: true,
-    visibleTurns: 3,
-    loadMoreBatch: 4,
-    prefetchBatches: 1,
+    visibleTurns: 2,
+    loadMoreBatch: 2,
+    prefetchBatches: 0,
     apiCacheEntries: 1,
-    apiCacheMaxKb: 512,
+    apiCacheMaxKb: 256,
     maintenanceEnabled: true,
-    maintenanceIntervalSec: 45,
+    maintenanceIntervalSec: 60,
+    autoCollapseLoadedMessages: true,
     cssContainmentEnabled: true,
     showStatus: false,
     debug: false
@@ -42,6 +43,9 @@
   const openGitRelease = document.getElementById("openGitRelease");
   const openExtensionsPage = document.getElementById("openExtensionsPage");
   const reloadExtension = document.getElementById("reloadExtension");
+  const tryChromeAutoUpdateButton = document.getElementById("tryChromeAutoUpdate");
+  const applyFastPresetButton = document.getElementById("applyFastPreset");
+  const reinjectPatchButton = document.getElementById("reinjectPatch");
   const gitUpdateStatus = document.getElementById("gitUpdateStatus");
   const gitUpdateLines = document.getElementById("gitUpdateLines");
   const DEBUG_LOG_KEY = "cgptLongChatLoader.debugLog.v1";
@@ -76,6 +80,9 @@
     if (openGitRelease) openGitRelease.addEventListener("click", openLatestReleasePage);
     if (openExtensionsPage) openExtensionsPage.addEventListener("click", openChromeExtensionsPage);
     if (reloadExtension) reloadExtension.addEventListener("click", () => chrome.runtime.reload());
+    if (tryChromeAutoUpdateButton) tryChromeAutoUpdateButton.addEventListener("click", tryChromeAutoUpdate);
+    if (applyFastPresetButton) applyFastPresetButton.addEventListener("click", applyFastPreset);
+    if (reinjectPatchButton) reinjectPatchButton.addEventListener("click", reinjectCurrentTabPatch);
 
     renderUpdateIdle();
     requestMetricsOnce();
@@ -91,7 +98,8 @@
   function storageSet(value) {
     return new Promise((resolve) => {
       if (!hasChromeStorage()) return resolve(false);
-      chrome.storage.local.set(value, () => resolve(!chrome.runtime.lastError));
+      const payload = value && typeof value === "object" ? { ...value, "cgptLongChatLoader.defaultsVersion": "1.4.0" } : value;
+      chrome.storage.local.set(payload, () => resolve(!chrome.runtime.lastError));
     });
   }
 
@@ -147,7 +155,25 @@
   function normalize(value) {
     const source = value && typeof value === "object" ? value : {};
     const nested = source.settings && typeof source.settings === "object" ? source.settings : {};
-    const merged = { ...DEFAULT_SETTINGS, ...nested, ...source };
+    let merged = { ...DEFAULT_SETTINGS, ...nested, ...source };
+    const defaultsVersion = String(source.cgptLongChatLoaderDefaultsVersion || source["cgptLongChatLoader.defaultsVersion"] || "");
+    const looksLikeOldDefault =
+      (!Object.prototype.hasOwnProperty.call(source, "visibleTurns") || Number(source.visibleTurns) === 3) &&
+      (!Object.prototype.hasOwnProperty.call(source, "loadMoreBatch") || Number(source.loadMoreBatch) === 3 || Number(source.loadMoreBatch) === 4) &&
+      (!Object.prototype.hasOwnProperty.call(source, "prefetchBatches") || Number(source.prefetchBatches) === 1) &&
+      (!Object.prototype.hasOwnProperty.call(source, "apiCacheMaxKb") || Number(source.apiCacheMaxKb) === 512) &&
+      (!Object.prototype.hasOwnProperty.call(source, "maintenanceIntervalSec") || Number(source.maintenanceIntervalSec) === 45);
+    if (defaultsVersion !== "1.4.0" && looksLikeOldDefault) {
+      merged = {
+        ...merged,
+        visibleTurns: 2,
+        loadMoreBatch: 2,
+        prefetchBatches: 0,
+        apiCacheMaxKb: 256,
+        maintenanceIntervalSec: 60,
+        autoCollapseLoadedMessages: true
+      };
+    }
     const cacheValue = Object.prototype.hasOwnProperty.call(merged, "apiCacheEntries")
       ? merged.apiCacheEntries
       : merged.responseCacheMax;
@@ -156,13 +182,14 @@
       enabled: Boolean(merged.enabled),
       apiTrimEnabled: Boolean(merged.apiTrimEnabled),
       safeNetworkMode: merged.safeNetworkMode === false ? false : true,
-      visibleTurns: clampInt(merged.visibleTurns, 1, 100, DEFAULT_SETTINGS.visibleTurns),
-      loadMoreBatch: clampInt(merged.loadMoreBatch, 1, 100, DEFAULT_SETTINGS.loadMoreBatch),
+      visibleTurns: clampInt(merged.visibleTurns, 1, 20, DEFAULT_SETTINGS.visibleTurns),
+      loadMoreBatch: clampInt(merged.loadMoreBatch, 1, 20, DEFAULT_SETTINGS.loadMoreBatch),
       prefetchBatches: clampInt(merged.prefetchBatches, 0, 30, DEFAULT_SETTINGS.prefetchBatches),
       apiCacheEntries: clampInt(cacheValue, 1, 2, DEFAULT_SETTINGS.apiCacheEntries),
       apiCacheMaxKb: clampInt(merged.apiCacheMaxKb, 128, 4096, DEFAULT_SETTINGS.apiCacheMaxKb),
       maintenanceEnabled: Boolean(merged.maintenanceEnabled),
       maintenanceIntervalSec: clampInt(merged.maintenanceIntervalSec, 10, 300, DEFAULT_SETTINGS.maintenanceIntervalSec),
+      autoCollapseLoadedMessages: merged.autoCollapseLoadedMessages === false ? false : true,
       cssContainmentEnabled: Boolean(merged.cssContainmentEnabled ?? merged.contentVisibilityEnabled),
       showStatus: Boolean(merged.showStatus),
       debug: Boolean(merged.debug)
@@ -238,8 +265,10 @@
     if (!chrome.scripting || !tab || !tab.id) return { ok: false, error: "scripting API unavailable" };
     if (tab.url && !isProbablyChatGptUrl(tab.url)) return { ok: false, error: "not a ChatGPT tab" };
 
+    await executeScript(tab.id, "mainWorld.js", "MAIN");
+    await delay(60);
     await insertCss(tab.id, "content.css");
-    return executeScript(tab.id, "content.js");
+    return executeScript(tab.id, "content.js", "ISOLATED");
   }
 
   function insertCss(tabId, file) {
@@ -254,10 +283,12 @@
     });
   }
 
-  function executeScript(tabId, file) {
+  function executeScript(tabId, file, world) {
     return new Promise((resolve) => {
       try {
-        chrome.scripting.executeScript({ target: { tabId }, files: [file] }, () => {
+        const details = { target: { tabId }, files: [file] };
+        if (world) details.world = world;
+        chrome.scripting.executeScript(details, () => {
           resolve({ ok: !chrome.runtime.lastError, error: chrome.runtime.lastError && chrome.runtime.lastError.message });
         });
       } catch (error) {
@@ -317,6 +348,7 @@
     appendMetricLine("Trim 상태", formatTrimState(metrics.trimState));
     appendMetricLine("응답 micro-cache", formatCache(metrics));
     appendMetricLine("API patch", formatApiPatch(metrics));
+    appendMetricLine("패치 상태", formatPatchHealth(metrics.patchHealth));
     appendMetricLine("CSS containment", formatCss(metrics));
     appendMetricLine("자동 정리", formatMaintenance(metrics.maintenance));
     appendMetricLine("JS heap", formatMemory(metrics.memory));
@@ -450,7 +482,7 @@
     const live = metrics && metrics.liveReply ? metrics.liveReply : {};
     const bypass = metrics && metrics.liveTrimBypass ? metrics.liveTrimBypass : {};
     const reason = String(live.reason || bypass.reason || "");
-    const active = Boolean((live.active || bypass.active) && /think|reason|thought|analysis|analyz|추론|생각|분석/i.test(reason));
+    const active = Boolean((live.active || bypass.active) && /think|reason|analysis|analyz|추론|생각|분석/i.test(reason));
     if (!active) return "대기";
     const remaining = positiveNumber(bypass.remainingSec) ? ` · ${formatNumber(bypass.remainingSec)}초 원본 통과` : "";
     return `활성 · ${reason}${remaining}`;
@@ -486,7 +518,7 @@
     const api = metrics && metrics.api ? metrics.api : null;
     const cache = metrics && metrics.cache ? metrics.cache : {};
     const entries = positiveNumber(settings.apiCacheEntries) || positiveNumber(cache.entries) || 1;
-    const maxKb = positiveNumber(settings.apiCacheMaxKb) || positiveNumber(cache.maxKb) || 512;
+    const maxKb = positiveNumber(settings.apiCacheMaxKb) || positiveNumber(cache.maxKb) || 256;
     let suffix = settings.safeNetworkMode ? " · safe initial-only" : "";
     if (cache && cache.suspended) suffix += ` · 일시중지 ${formatNumber(cache.suspendedForSec)}초 · ${cache.suspendedReason || "active"}`;
     else if (api && api.cacheHit) suffix += " · hit";
@@ -499,6 +531,16 @@
     if (!metrics) return "미감지";
     if (metrics.mainWorldVersion) return `MAIN ${metrics.mainWorldVersion}`;
     return "미감지 · 탭 새로고침 필요";
+  }
+
+  function formatPatchHealth(health) {
+    if (!health) return "미감지";
+    const parts = [];
+    parts.push(health.mainWorldDetected ? "MAIN 감지" : "MAIN 미감지");
+    if (health.fallbackInjected) parts.push("fallback 주입");
+    if (health.stableInitialTrim) parts.push(`stable trim ${formatNumber(health.stableInitialTrimAgeSec || 0)}초 전`);
+    else if (health.hasTrimStats) parts.push("trim stats 있음");
+    return parts.join(" · ");
   }
 
   function formatMaintenance(maintenance) {
@@ -692,7 +734,7 @@
     appendUpdateLine("Release", formatReleaseSummary(info.release));
     appendUpdateLine("main manifest", info.mainManifest && info.mainManifest.version ? info.mainManifest.version : (info.mainError || "미감지"));
     appendUpdateLine("다운로드", best.downloadUrl ? `${best.downloadKind || "zip"} · ${best.downloadName || "latest"}` : "없음");
-    appendUpdateLine("주의", "다운로드 후 압축 해제 및 Load unpacked 교체 필요");
+    appendUpdateLine("주의", "개발자 모드/unpacked는 자동 파일 교체 불가. CRX/Web Store/self-hosted 설치만 requestUpdateCheck 가능");
     setDownloadButtonEnabled(Boolean(best.downloadUrl));
   }
 
@@ -753,6 +795,105 @@
       openExternalPage(best.downloadUrl);
       setUpdateStatus("다운로드 페이지 열림", "downloads API를 사용할 수 없어 URL을 새 탭으로 열었습니다.");
     }
+  }
+
+  async function tryChromeAutoUpdate() {
+    setUpdateStatus("Chrome 자동 업데이트 확인 중", "runtime.requestUpdateCheck를 호출합니다.");
+    clearUpdateLines();
+    const self = await getSelfInfo();
+    if (self && self.installType) appendUpdateLine("설치 유형", self.installType);
+
+    const result = await requestChromeUpdateCheck();
+    appendUpdateLine("Chrome update check", result.status || result.error || "unknown");
+    if (result.version) appendUpdateLine("감지 버전", result.version);
+
+    if (result.status === "update_available") {
+      setUpdateStatus("업데이트 감지", "Chrome이 받은 업데이트를 적용하기 위해 확장을 재로드합니다.");
+      setTimeout(() => chrome.runtime.reload(), 500);
+      return;
+    }
+
+    if (self && self.installType === "development") {
+      setUpdateStatus("자동 설치 불가", "현재 개발자 모드/unpacked 설치입니다. 릴리스 ZIP 다운로드 후 폴더 교체가 필요합니다.");
+      await checkGitHubUpdate();
+      return;
+    }
+
+    setUpdateStatus("Chrome 업데이트 없음", "릴리스 정보도 함께 확인합니다.");
+    await checkGitHubUpdate();
+  }
+
+  function getSelfInfo() {
+    return new Promise((resolve) => {
+      try {
+        if (!chrome.management || !chrome.management.getSelf) return resolve(null);
+        chrome.management.getSelf((info) => {
+          if (chrome.runtime.lastError) return resolve(null);
+          resolve(info || null);
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  function requestChromeUpdateCheck() {
+    return new Promise((resolve) => {
+      try {
+        if (!chrome.runtime || !chrome.runtime.requestUpdateCheck) return resolve({ error: "requestUpdateCheck unavailable" });
+        chrome.runtime.requestUpdateCheck((status, details) => {
+          const error = chrome.runtime.lastError ? chrome.runtime.lastError.message : "";
+          if (error) return resolve({ error });
+          resolve({ status, version: details && details.version });
+        });
+      } catch (error) {
+        resolve({ error: String(error && error.message ? error.message : error) });
+      }
+    });
+  }
+
+  async function applyFastPreset() {
+    const current = normalize(await storageGetAll());
+    const next = normalize({
+      ...current,
+      enabled: true,
+      apiTrimEnabled: true,
+      safeNetworkMode: true,
+      visibleTurns: 2,
+      loadMoreBatch: 2,
+      prefetchBatches: 0,
+      apiCacheEntries: 1,
+      apiCacheMaxKb: 256,
+      maintenanceEnabled: true,
+      maintenanceIntervalSec: 60,
+      autoCollapseLoadedMessages: true,
+      cssContainmentEnabled: true,
+      showStatus: false
+    });
+    renderSettings(next);
+    await storageSet(next);
+    setMetricState("빠른 초기 로딩 프리셋 적용", "긴 대화 탭을 새로고침하면 가장 효과가 큽니다.");
+    if (saved) saved.textContent = "프리셋 저장됨";
+    await reinjectCurrentTabPatch(false);
+  }
+
+  async function reinjectCurrentTabPatch(showStatus = true) {
+    const tab = await getActiveTab();
+    if (!tab || !tab.id || !isProbablyChatGptUrl(tab.url)) {
+      if (showStatus) renderMetricUnavailable("ChatGPT 탭에서만 패치 재주입을 시도할 수 있습니다.");
+      return { ok: false };
+    }
+    const injected = await injectContentScripts(tab);
+    if (showStatus) {
+      if (injected.ok) {
+        setMetricState("패치 재주입 완료", "초기 fetch는 새로고침 후 가장 안정적으로 줄어듭니다.");
+        await delay(180);
+        await requestMetricsOnce();
+      } else {
+        renderMetricUnavailable(`패치 재주입 실패 · ${injected.error || "unknown"}`);
+      }
+    }
+    return injected;
   }
 
   function openLatestReleasePage() {

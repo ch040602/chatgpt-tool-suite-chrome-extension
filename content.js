@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.1.0";
-  const CONTENT_BOOT_FLAG = "__CGPT_LONG_CHAT_LOADER_CONTENT_ACTIVE_V110__";
+  const CONTENT_VERSION = "1.4.0";
+  const CONTENT_BOOT_FLAG = "__CGPT_LONG_CHAT_LOADER_CONTENT_ACTIVE_V140__";
   if (window[CONTENT_BOOT_FLAG]) {
     try {
       window.dispatchEvent(new CustomEvent("cgpt-lb-force-scan", { detail: CONTENT_VERSION }));
@@ -36,9 +36,10 @@
   const HIDDEN_CLASS = "cgpt-lb-hidden";
   const CONTAINED_CLASS = "cgpt-lb-contained";
   const LIVE_PROTECTED_CLASS = "cgpt-lb-live-protected";
-  const LOAD_MORE_ID = "cgpt-lb-load-more-v110";
+  const LOAD_MORE_ID = "cgpt-lb-load-more-v140";
   const LEGACY_LOAD_MORE_ID = "cgpt-lb-load-more";
   const STATUS_ID = "cgpt-lb-status";
+  const RUNTIME_STYLE_ID = "cgpt-lb-runtime-style-v140";
   const TRIM_MARKER_KEY = "cgptLongChatLoader.trimMarkers.v1";
   const DEBUG_LOG_KEY = "cgptLongChatLoader.debugLog.v1";
   const TRIM_MARKER_TTL_MS = 6 * 60 * 60 * 1000;
@@ -55,6 +56,7 @@
   const TURN_SELECTOR = [
     '[data-testid^="conversation-turn-"]',
     '[data-testid*="conversation-turn"]',
+    '[class*="group/conversation-turn"]',
     '[data-turn-id]',
     '[data-message-id]'
   ].join(", ");
@@ -66,6 +68,7 @@
   const TURN_CLOSEST_SELECTOR = [
     '[data-testid^="conversation-turn-"]',
     '[data-testid*="conversation-turn"]',
+    '[class*="group/conversation-turn"]',
     '[data-turn-id]',
     "article",
     '[role="article"]'
@@ -75,13 +78,14 @@
     enabled: true,
     apiTrimEnabled: true,
     safeNetworkMode: true,
-    visibleTurns: 3,
-    loadMoreBatch: 4,
-    prefetchBatches: 1,
+    visibleTurns: 2,
+    loadMoreBatch: 2,
+    prefetchBatches: 0,
     apiCacheEntries: 1,
-    apiCacheMaxKb: 512,
+    apiCacheMaxKb: 256,
     maintenanceEnabled: true,
-    maintenanceIntervalSec: 45,
+    maintenanceIntervalSec: 60,
+    autoCollapseLoadedMessages: true,
     cssContainmentEnabled: true,
     showStatus: false,
     debug: false
@@ -109,12 +113,15 @@
   let lastObservedTurnTotal = 0;
   let lastCharacterDataScanAt = 0;
   let lastLoadMoreState = { visible: false, mode: "none", hiddenCount: 0, reason: "init", placement: "none" };
+  let lastLoadMoreAt = 0;
   let liveReplyState = { active: false, reason: "init", lastSeenAt: 0, protectedCount: 0 };
   let lastActiveSignalAt = 0;
   let lastActiveSignalValue = false;
   let activeReplyWatchdogTimer = 0;
+  let autoCollapseTimer = 0;
   let streamRecoverySince = 0;
   let debugLogWriteQueue = Promise.resolve();
+  let mainWorldFallbackInjected = false;
 
   boot();
 
@@ -122,6 +129,7 @@
     settings = await loadSettings();
     hydrateTrimStateFromStorage();
     writeSettingsBridge();
+    ensureMainWorldPatchFallback();
     listenForSettingsChanges();
     listenForPopupMetrics();
     listenForTrimStats();
@@ -174,13 +182,14 @@
       enabled: Boolean(merged.enabled),
       apiTrimEnabled: Boolean(merged.apiTrimEnabled),
       safeNetworkMode: merged.safeNetworkMode === false ? false : true,
-      visibleTurns: clampInt(merged.visibleTurns, 1, 100, DEFAULT_SETTINGS.visibleTurns),
-      loadMoreBatch: clampInt(merged.loadMoreBatch, 1, 100, DEFAULT_SETTINGS.loadMoreBatch),
+      visibleTurns: clampInt(merged.visibleTurns, 1, 20, DEFAULT_SETTINGS.visibleTurns),
+      loadMoreBatch: clampInt(merged.loadMoreBatch, 1, 20, DEFAULT_SETTINGS.loadMoreBatch),
       prefetchBatches: clampInt(merged.prefetchBatches, 0, 30, DEFAULT_SETTINGS.prefetchBatches),
       apiCacheEntries: clampInt(cacheValue, 1, 2, DEFAULT_SETTINGS.apiCacheEntries),
       apiCacheMaxKb: clampInt(merged.apiCacheMaxKb, 128, 4096, DEFAULT_SETTINGS.apiCacheMaxKb),
       maintenanceEnabled: Boolean(merged.maintenanceEnabled),
       maintenanceIntervalSec: clampInt(merged.maintenanceIntervalSec, 10, 300, DEFAULT_SETTINGS.maintenanceIntervalSec),
+      autoCollapseLoadedMessages: merged.autoCollapseLoadedMessages === false ? false : true,
       cssContainmentEnabled: Boolean(merged.cssContainmentEnabled ?? merged.contentVisibilityEnabled),
       showStatus: Boolean(merged.showStatus),
       debug: Boolean(merged.debug)
@@ -208,6 +217,36 @@
     } catch {
       // Ignore event bridge failures.
     }
+  }
+
+  function ensureMainWorldPatchFallback() {
+    // Static MAIN-world injection at document_start is the primary path. If a tab was
+    // already open when the extension was updated or Chrome skipped content scripts,
+    // inject mainWorld.js as a page script so future conversation fetches are patched.
+    const tryInject = () => {
+      const root = document.documentElement;
+      const detected = root && root.getAttribute("data-cgpt-lb-main-version");
+      if (detected || mainWorldFallbackInjected || !settings.enabled || !settings.apiTrimEnabled) return;
+      const runtime = typeof chrome !== "undefined" && chrome.runtime;
+      if (!runtime || !runtime.getURL) return;
+      try {
+        const script = document.createElement("script");
+        script.src = runtime.getURL("mainWorld.js");
+        script.async = false;
+        script.dataset.cgptLbFallbackMainWorld = CONTENT_VERSION;
+        const target = document.documentElement || document.head || document.body;
+        if (!target) return;
+        target.appendChild(script);
+        script.remove();
+        mainWorldFallbackInjected = true;
+        debugLog("content", "mainWorld fallback script injected");
+      } catch (error) {
+        debugLog("content", "mainWorld fallback injection failed", String(error && error.message ? error.message : error));
+      }
+    };
+    setTimeout(tryInject, 80);
+    setTimeout(tryInject, 800);
+    setTimeout(tryInject, 2500);
   }
 
   function listenForSettingsChanges() {
@@ -326,7 +365,6 @@
 
   function scheduleMaintenance(reason) {
     if (!settings.enabled || !settings.maintenanceEnabled || !isLikelyChatSurface() || document.hidden) return;
-    if (isActiveReplyProtected()) return;
     if (maintenanceScheduled) return;
     maintenanceScheduled = true;
 
@@ -344,13 +382,21 @@
 
   function runMaintenance(reason) {
     if (!settings.enabled || !settings.maintenanceEnabled || !isLikelyChatSurface()) return;
+    lastMaintenanceAt = Date.now();
+
     if (isActiveReplyProtected()) {
+      // Keep live cache/rewrite protection alive, but still re-apply DOM windowing.
+      // A full conversation can be rendered while ChatGPT is streaming/recovering;
+      // leaving maintenance disabled in that state makes every old message stay visible.
       dispatchActiveStateToMain(true, liveReplyState.reason || "active reply", ACTIVE_REPLY_PROTECTION_MS);
+      compactVolatileState(reason);
+      ensureObserverTarget();
+      scanAndApply();
       return;
     }
-    lastMaintenanceAt = Date.now();
+
     dispatchMaintenanceToMain(reason);
-    compactVolatileState();
+    compactVolatileState(reason);
     ensureObserverTarget();
     scanAndApply();
   }
@@ -365,7 +411,7 @@
     }
   }
 
-  function compactVolatileState() {
+  function compactVolatileState(reason) {
     if (!settings.apiTrimEnabled) {
       clearTrimMarkerForCurrentRoute();
     } else if (lastApiStats && !statsApplyToThisPage(lastApiStats)) {
@@ -386,8 +432,26 @@
     if (currentTotal < lastObservedTurnTotal) {
       extraVisibleMessages = Math.min(extraVisibleMessages, Math.max(0, currentTotal - settings.visibleTurns * 2));
     }
+    if (settings.autoCollapseLoadedMessages && extraVisibleMessages > 0 && !isActiveReplyProtected()) {
+      const collapseGraceMs = Math.max(30_000, settings.maintenanceIntervalSec * 1000);
+      const canCollapse = !lastLoadMoreAt || Date.now() - lastLoadMoreAt >= collapseGraceMs;
+      if (canCollapse) {
+        debug("auto-collapsing previously loaded older messages", { reason, extraVisibleMessages, currentTotal });
+        extraVisibleMessages = 0;
+      }
+    }
     lastObservedTurnTotal = currentTotal;
     pendingRelevantMutations = 0;
+  }
+
+  function scheduleAutoCollapseLoadedMessages(reason) {
+    if (autoCollapseTimer) clearTimeout(autoCollapseTimer);
+    if (!settings.enabled || !settings.maintenanceEnabled || !settings.autoCollapseLoadedMessages) return;
+    const collapseGraceMs = Math.max(30_000, settings.maintenanceIntervalSec * 1000);
+    autoCollapseTimer = window.setTimeout(() => {
+      autoCollapseTimer = 0;
+      scheduleMaintenance(reason || "load-more-auto-collapse");
+    }, collapseGraceMs + 250);
   }
 
   function isStaleTimestamp(timestamp, ttlMs) {
@@ -764,58 +828,149 @@
 
   function queryMessageTurns() {
     const scope = getMessageScope();
-    const candidates = [];
+    const exactSelector = '[data-testid^="conversation-turn-"], [data-testid*="conversation-turn"], [class*="group/conversation-turn"], [data-turn-id]';
 
-    for (const el of safeQueryAll(TURN_SELECTOR, scope)) {
-      const turn = normalizeTurnElement(el, scope);
-      if (turn) candidates.push(turn);
+    const strategies = [
+      () => safeQueryAll(exactSelector, scope).map((el) => normalizeTurnElement(el, scope)),
+      () => safeQueryAll(ROLE_SELECTOR, scope).map((el) => resolveTurnFromRoleNode(el, scope)),
+      () => safeQueryAll("[data-message-id]", scope).map((el) => resolveTurnFromMessageIdNode(el, scope)),
+      () => safeQueryAll("article, [role='article']", scope).map((el) => normalizeTurnElement(el, scope)),
+      () => safeQueryAll(".markdown, .prose", scope).map((el) => normalizeTurnElement(el, scope))
+    ];
+
+    let best = [];
+    for (const build of strategies) {
+      const turns = finalizeTurnCandidates(build(), scope);
+      if (turns.length > best.length) best = turns;
+      // In a real long conversation, two or more resolved turns means the selector is
+      // specific enough. Stop here so a later fallback cannot replace it with a broad
+      // conversation wrapper.
+      if (turns.length >= 2) return turns;
     }
 
-    for (const node of safeQueryAll(ROLE_SELECTOR, scope)) {
-      const turn = normalizeTurnElement(node, scope);
-      if (turn) candidates.push(turn);
-    }
-
-    // Last-resort fallback for ChatGPT DOM variants that keep role metadata off the wrapper
-    // but still render assistant messages through markdown/prose blocks. This runs only
-    // inside the main chat surface and is normalized upward to avoid hiding inner blocks.
-    if (candidates.length === 0) {
-      for (const node of safeQueryAll(".markdown, .prose", scope)) {
-        const turn = normalizeTurnElement(node, scope);
-        if (turn) candidates.push(turn);
-      }
-    }
-
-    return removeNested(sortDocumentOrder(uniqueElements(candidates)))
-      .filter((el) => isAttached(el) && !isExtensionUi(el) && isLikelyMessageTurn(el, scope));
+    return best;
   }
 
   function normalizeTurnElement(el, scope) {
     if (!(el instanceof HTMLElement)) return null;
     if (isExtensionUi(el)) return null;
 
-    const direct = el.closest(TURN_CLOSEST_SELECTOR);
-    if (direct instanceof HTMLElement && containsWithinScope(scope, direct)) return direct;
+    const exactSelector = '[data-testid^="conversation-turn-"], [data-testid*="conversation-turn"], [class*="group/conversation-turn"], [data-turn-id]';
+    if (el.matches(exactSelector) && containsWithinScope(scope, el) && !isMultiTurnWrapper(el)) return el;
 
-    return climbToStableMessageContainer(el, scope);
+    if (el.matches(ROLE_SELECTOR)) return resolveTurnFromRoleNode(el, scope);
+    if (el.matches("[data-message-id]")) return resolveTurnFromMessageIdNode(el, scope);
+
+    const direct = el.closest(exactSelector);
+    if (direct instanceof HTMLElement && containsWithinScope(scope, direct) && !isMultiTurnWrapper(direct)) return direct;
+
+    const article = el.closest("article, [role='article']");
+    if (article instanceof HTMLElement && containsWithinScope(scope, article) && !isMultiTurnWrapper(article)) return article;
+
+    return climbToStandaloneMessageContainer(el, scope);
   }
 
-  function climbToStableMessageContainer(el, scope) {
+  function resolveTurnFromRoleNode(roleNode, scope) {
+    if (!(roleNode instanceof HTMLElement)) return null;
+    const exactSelector = '[data-testid^="conversation-turn-"], [data-testid*="conversation-turn"], [class*="group/conversation-turn"], [data-turn-id]';
+
+    const direct = roleNode.closest(exactSelector);
+    if (direct instanceof HTMLElement && containsWithinScope(scope, direct) && !isMultiTurnWrapper(direct)) return direct;
+
+    const article = roleNode.closest("article, [role='article']");
+    if (article instanceof HTMLElement && containsWithinScope(scope, article) && !isMultiTurnWrapper(article)) return article;
+
+    return climbToStandaloneMessageContainer(roleNode, scope);
+  }
+
+  function resolveTurnFromMessageIdNode(messageNode, scope) {
+    if (!(messageNode instanceof HTMLElement)) return null;
+    const roleWithin = messageNode.matches(ROLE_SELECTOR) || Boolean(messageNode.querySelector && messageNode.querySelector(ROLE_SELECTOR));
+    if (roleWithin && !isMultiTurnWrapper(messageNode) && isLikelyMessageTurn(messageNode, scope)) return messageNode;
+    return normalizeTurnElement(messageNode.parentElement || messageNode, scope);
+  }
+
+  function climbToStandaloneMessageContainer(el, scope) {
     let node = el instanceof HTMLElement ? el : null;
-    let fallback = null;
+    let best = null;
     let depth = 0;
 
-    while (node && node !== scope && node !== document.body && depth < 8) {
+    while (node && node !== scope && node !== document.body && node !== document.documentElement && depth < 12) {
       if (!(node instanceof HTMLElement)) break;
-      const hasRole = Boolean(node.querySelector && node.querySelector(ROLE_SELECTOR));
-      const hasMessageId = Boolean(node.querySelector && node.querySelector("[data-message-id]"));
+      if (isExtensionUi(node) || isForbiddenMessageAncestor(node)) break;
+
+      const roleCount = countMatchesIncludingSelf(node, ROLE_SELECTOR, 3);
+      const turnMarkerCount = countMatchesIncludingSelf(node, '[data-testid^="conversation-turn-"], [data-testid*="conversation-turn"], [class*="group/conversation-turn"], [data-turn-id]', 3);
       const textLength = (node.textContent || "").trim().length;
-      if ((hasRole || hasMessageId) && textLength > 0) fallback = node;
-      node = node.parentElement;
+      const hasTurnClass = String(node.getAttribute("class") || "").includes("group/conversation-turn");
+      const hasMessageSignal = roleCount === 1 || turnMarkerCount === 1 || hasTurnClass || node.hasAttribute("data-message-id") || Boolean(node.querySelector && node.querySelector(".markdown, .prose"));
+
+      if (roleCount > 1 || turnMarkerCount > 1) break;
+      if (hasMessageSignal && textLength > 0) best = node;
+
+      const parent = node.parentElement;
+      if (!parent || parent === scope || parent === document.body || parent === document.documentElement) break;
+      const parentRoleCount = countMatchesIncludingSelf(parent, ROLE_SELECTOR, 3);
+      const parentTurnMarkerCount = countMatchesIncludingSelf(parent, '[data-testid^="conversation-turn-"], [data-testid*="conversation-turn"], [class*="group/conversation-turn"], [data-turn-id]', 3);
+      if (parentRoleCount > 1 || parentTurnMarkerCount > 1) break;
+
+      node = parent;
       depth += 1;
     }
 
-    return fallback;
+    return best;
+  }
+
+  function finalizeTurnCandidates(candidates, scope) {
+    const filtered = uniqueElements(candidates)
+      .filter((el) => el instanceof HTMLElement)
+      .filter((el) => isAttached(el) && !isExtensionUi(el))
+      .filter((el) => !isMultiTurnWrapper(el))
+      .filter((el) => isLikelyMessageTurn(el, scope));
+
+    const ordered = sortDocumentOrder(filtered);
+    return ordered.filter((el) => {
+      // Prefer the outer single-turn wrapper over its inner role/prose node, but never
+      // keep a parent that contains multiple turns.
+      return !ordered.some((other) => other !== el && other.contains(el) && !isMultiTurnWrapper(other));
+    });
+  }
+
+  function isMultiTurnWrapper(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    if (isForbiddenMessageAncestor(el)) return true;
+    const roleCount = countMatchesIncludingSelf(el, ROLE_SELECTOR, 3);
+    if (roleCount > 1) return true;
+    const turnMarkerCount = countMatchesIncludingSelf(el, '[data-testid^="conversation-turn-"], [data-testid*="conversation-turn"], [class*="group/conversation-turn"], [data-turn-id]', 3);
+    if (turnMarkerCount > 1) return true;
+    return false;
+  }
+
+  function countMatchesIncludingSelf(el, selector, limit) {
+    if (!(el instanceof HTMLElement)) return 0;
+    const max = Math.max(1, Number(limit) || 3);
+    let count = 0;
+    try {
+      if (el.matches(selector) && !isExtensionUi(el)) count += 1;
+      if (count >= max) return count;
+      if (el.querySelectorAll) {
+        for (const child of el.querySelectorAll(selector)) {
+          if (child instanceof HTMLElement && !isExtensionUi(child)) count += 1;
+          if (count >= max) return count;
+        }
+      }
+    } catch {
+      return count;
+    }
+    return count;
+  }
+
+  function isForbiddenMessageAncestor(el) {
+    if (!(el instanceof HTMLElement)) return true;
+    if (el.matches("html, body, main, nav, aside, header, footer, form, textarea")) return true;
+    if (el.closest("nav, aside, header, footer, [data-testid='conversation-sidebar'], [data-testid*='sidebar']")) return true;
+    if (el.matches("[data-scroll-root], [role='main']")) return true;
+    return false;
   }
 
   function containsWithinScope(scope, el) {
@@ -1002,14 +1157,13 @@
       el.getAttribute("data-state"),
       el.getAttribute("class")
     ].map((value) => String(value || "").toLowerCase()).join(" ");
-    return /think|reason|thought|reasoning|analysis|analyz/.test(haystack);
+    return /think|reason|reasoning|analysis|analyz/.test(haystack);
   }
 
   function matchesThinkingText(value) {
     const text = String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
     if (!text) return false;
-    if (/\b(thinking|reasoning|thought|analyzing|working)\b/.test(text)) return true;
-    if (/\bthought for\b/.test(text)) return true;
+    if (/\b(thinking|reasoning|analyzing|working)\b/.test(text)) return true;
     if (text.includes("생각 중") || text.includes("생각중") || text.includes("추론 중") || text.includes("추론중")) return true;
     if (text.includes("생각하는 중") || text.includes("분석 중") || text.includes("분석중")) return true;
     return false;
@@ -1028,7 +1182,7 @@
 
   function isThinkingReason(value) {
     const text = String(value || "").toLowerCase();
-    return /think|reason|thought|analysis|analyz|추론|생각|분석/.test(text);
+    return /think|reason|analysis|analyz|추론|생각|분석/.test(text);
   }
 
   function setSafetyLock(reason, ttlMs) {
@@ -1188,9 +1342,6 @@
     }
 
     if (total === 0) {
-      // A transient zero-turn scan can happen while ChatGPT is re-rendering, streaming,
-      // or replacing the scroll root. Do not lose the full-load affordance merely
-      // because the lightweight cache/stat cleanup removed the root attribute.
       if (settings.apiTrimEnabled && (apiTrimmedCurrentConversation || hydrateTrimStateFromStorage() || liveState.active)) {
         updateLoadMore(0, []);
       } else {
@@ -1201,67 +1352,90 @@
       return;
     }
 
-    if (liveState.active) {
-      // During active generation/thinking, avoid broad DOM churn. Only make sure the
-      // current tail and detected thinking/status elements are visible and uncontained;
-      // leave older hidden/visible state untouched until the reply becomes idle.
-      const protectedCount = Math.max(8, Number(liveState.protectedCount) || 8, settings.visibleTurns * 2);
-      const protectedStart = Math.max(0, total - protectedCount);
-      for (let i = protectedStart; i < total; i += 1) {
-        const el = turns[i];
-        applyLiveProtection(el);
-        removeContainment(el);
-        showElement(el);
-      }
-      for (const el of turns) {
-        if (isThinkingOrLiveTurn(el)) {
-          applyLiveProtection(el);
-          removeContainment(el);
-          showElement(el);
-        }
-      }
-      const hiddenNow = turns.filter((el) => el.classList.contains(HIDDEN_CLASS)).length;
-      updateLoadMore(hiddenNow, turns);
-      updateStatus(hiddenNow, total);
-      lastDomMetrics = { total, hidden: hiddenNow, visible: Math.max(0, total - hiddenNow) };
-      return;
-    }
-
-    const baseVisibleMessages = settings.visibleTurns * 2;
-    const liveExtra = liveState.active ? Math.max(4, Number(liveState.protectedCount) || 6) : 0;
-    const visibleLimit = Math.max(2, baseVisibleMessages + extraVisibleMessages + liveExtra);
-    let hiddenCount = Math.max(0, total - visibleLimit);
+    const baseVisibleMessages = Math.max(1, settings.visibleTurns) * 2;
+    const requestedVisible = Math.max(2, baseVisibleMessages + Math.max(0, extraVisibleMessages));
+    const protectedIndexes = computeProtectedIndexes(turns, liveState, requestedVisible);
+    const visibleIndexes = computeVisibleWindowIndexes(total, requestedVisible, protectedIndexes);
     let actuallyHidden = 0;
 
-    const alwaysProtectedTail = Math.max(6, settings.visibleTurns * 2);
     for (let i = 0; i < total; i += 1) {
       const el = turns[i];
-      const liveProtected = isLiveProtectedTurn(i, total, liveState);
-      const tailProtected = i >= Math.max(0, total - alwaysProtectedTail);
-      const thinkingProtected = isThinkingOrLiveTurn(el);
-
-      if (liveProtected || tailProtected || thinkingProtected) {
+      const liveProtected = protectedIndexes.has(i);
+      if (liveProtected) {
         applyLiveProtection(el);
         removeContainment(el);
-        showElement(el);
-        continue;
+      } else {
+        removeLiveProtection(el);
+        if (settings.cssContainmentEnabled) applyContainment(el);
+        else removeContainment(el);
       }
 
-      removeLiveProtection(el);
-      if (settings.cssContainmentEnabled) applyContainment(el);
-      else removeContainment(el);
-
-      if (i < hiddenCount) {
+      if (visibleIndexes.has(i)) {
+        showElement(el);
+      } else {
         hideElement(el);
         actuallyHidden += 1;
-      } else {
-        showElement(el);
       }
     }
 
     updateLoadMore(actuallyHidden, turns);
     updateStatus(actuallyHidden, total);
     lastDomMetrics = { total, hidden: actuallyHidden, visible: Math.max(0, total - actuallyHidden) };
+    writeWindowingState(total, actuallyHidden, visibleIndexes.size, liveState);
+  }
+
+  function computeProtectedIndexes(turns, liveState, requestedVisible) {
+    const protectedIndexes = new Set();
+    const total = turns.length;
+    if (!total) return protectedIndexes;
+
+    // Keep the newest configured window visible. During active generation, expand
+    // the tail so the current answer/thinking panel remains visible, but do not
+    // protect historical "Thought for..." / reasoning snippets across the whole transcript.
+    const minimumTail = Math.max(2, Math.min(total, requestedVisible));
+    const activeTail = liveState && liveState.active
+      ? Math.max(minimumTail, Math.min(total, Number(liveState.protectedCount) || 6))
+      : minimumTail;
+    const tailStart = Math.max(0, total - activeTail);
+    for (let i = tailStart; i < total; i += 1) protectedIndexes.add(i);
+
+    if (liveState && liveState.active) {
+      for (let i = tailStart; i < total; i += 1) {
+        if (isThinkingOrLiveTurn(turns[i])) protectedIndexes.add(i);
+      }
+    }
+
+    // Explicit streaming markers outside the tail are rare but should not be hidden.
+    for (let i = 0; i < total; i += 1) {
+      if (hasStreamingMarker(turns[i])) protectedIndexes.add(i);
+    }
+
+    return protectedIndexes;
+  }
+
+  function computeVisibleWindowIndexes(total, requestedVisible, protectedIndexes) {
+    const visible = new Set();
+    const target = Math.min(total, Math.max(1, Number(requestedVisible) || 1));
+    for (const index of protectedIndexes) {
+      if (Number.isInteger(index) && index >= 0 && index < total) visible.add(index);
+    }
+
+    // Fill from the newest messages backwards until the configured window is reached.
+    for (let i = total - 1; i >= 0 && visible.size < target; i -= 1) {
+      visible.add(i);
+    }
+
+    return visible;
+  }
+
+  function writeWindowingState(total, hidden, visible, liveState) {
+    const root = document.documentElement;
+    if (!root) return;
+    root.setAttribute("data-cgpt-lb-window-total", String(total));
+    root.setAttribute("data-cgpt-lb-window-hidden", String(hidden));
+    root.setAttribute("data-cgpt-lb-window-visible", String(visible));
+    root.setAttribute("data-cgpt-lb-window-active", liveState && liveState.active ? "true" : "false");
+    root.setAttribute("data-cgpt-lb-window-at", String(Date.now()));
   }
 
   function showAllKnownTurns() {
@@ -1303,22 +1477,52 @@
   }
 
   function hideElement(el) {
+    if (!(el instanceof HTMLElement)) return;
     if (el.classList.contains(LIVE_PROTECTED_CLASS)) {
       showElement(el);
       return;
     }
-    if (el.classList.contains(HIDDEN_CLASS)) return;
+    if (!el.hasAttribute("data-cgpt-lb-prev-display")) {
+      el.setAttribute("data-cgpt-lb-prev-display", el.style.display || "");
+    }
+    if (!el.hasAttribute("data-cgpt-lb-prev-content-visibility")) {
+      el.setAttribute("data-cgpt-lb-prev-content-visibility", el.style.contentVisibility || "");
+    }
     el.classList.add(HIDDEN_CLASS);
+    el.setAttribute("data-cgpt-lb-hidden", "true");
     el.setAttribute("aria-hidden", "true");
+    // Inline important fallback keeps windowing active even if Chrome injected the JS
+    // before content.css, or if ChatGPT CSS has higher specificity. Previous inline
+    // values are restored by showElement().
+    try {
+      el.style.setProperty("display", "none", "important");
+      el.style.setProperty("content-visibility", "hidden", "important");
+    } catch {
+      // Non-critical style fallback failure.
+    }
   }
 
   function showElement(el) {
-    if (!el.classList.contains(HIDDEN_CLASS)) return;
+    if (!(el instanceof HTMLElement)) return;
     el.classList.remove(HIDDEN_CLASS);
+    el.removeAttribute("data-cgpt-lb-hidden");
     el.removeAttribute("aria-hidden");
+    try {
+      const prevDisplay = el.getAttribute("data-cgpt-lb-prev-display");
+      const prevContentVisibility = el.getAttribute("data-cgpt-lb-prev-content-visibility");
+      if (prevDisplay === null || prevDisplay === "") el.style.removeProperty("display");
+      else el.style.setProperty("display", prevDisplay);
+      if (prevContentVisibility === null || prevContentVisibility === "") el.style.removeProperty("content-visibility");
+      else el.style.setProperty("content-visibility", prevContentVisibility);
+    } catch {
+      // Ignore inline restore failures.
+    }
+    el.removeAttribute("data-cgpt-lb-prev-display");
+    el.removeAttribute("data-cgpt-lb-prev-content-visibility");
   }
 
   function ensureUi() {
+    ensureRuntimeStyle();
     removeLegacyLoadMoreButton();
     if (!loadMoreButton || !document.documentElement.contains(loadMoreButton)) {
       loadMoreButton = document.createElement("button");
@@ -1340,6 +1544,20 @@
       statusBadge.setAttribute("aria-live", "polite");
       document.body.appendChild(statusBadge);
     }
+  }
+
+  function ensureRuntimeStyle() {
+    if (!document.documentElement) return;
+    if (document.getElementById(RUNTIME_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = RUNTIME_STYLE_ID;
+    style.textContent = `
+      .${HIDDEN_CLASS},[data-cgpt-lb-hidden="true"]{display:none!important;content-visibility:hidden!important;}
+      .${LIVE_PROTECTED_CLASS}{content-visibility:visible!important;contain-intrinsic-size:unset!important;}
+      @supports (content-visibility:auto){.${CONTAINED_CLASS}:not(.${HIDDEN_CLASS}){content-visibility:auto;contain-intrinsic-size:auto 720px;}}
+    `;
+    const target = document.head || document.documentElement;
+    target.appendChild(style);
   }
 
   function removeStatusBadge() {
@@ -1370,8 +1588,10 @@
       loadMoreButton.textContent = `이전 메시지 ${batchCount}개 더 보기 · 숨김 ${hiddenCount}개`;
       lastLoadMoreState = { visible: true, mode: "more", hiddenCount, reason: "hidden-dom", placement: "pending" };
       loadMoreButton.onclick = () => {
+        lastLoadMoreAt = Date.now();
         extraVisibleMessages += settings.loadMoreBatch * 2;
         scanAndApply();
+        scheduleAutoCollapseLoadedMessages("load-more-auto-collapse");
         requestAnimationFrame(() => {
           if (loadMoreButton && !loadMoreButton.hidden) loadMoreButton.scrollIntoView({ block: "center", behavior: "smooth" });
         });
@@ -1480,6 +1700,21 @@
     return Number.isFinite(n) ? n : null;
   }
 
+  function readPatchHealth() {
+    const root = document.documentElement;
+    const mainVersion = root ? root.getAttribute("data-cgpt-lb-main-version") : "";
+    const stats = readApiStats();
+    const stableAt = Number(root && root.getAttribute("data-cgpt-lb-stable-initial-trim-at"));
+    return {
+      mainWorldDetected: Boolean(mainVersion),
+      mainWorldVersion: mainVersion || null,
+      fallbackInjected: Boolean(mainWorldFallbackInjected),
+      hasTrimStats: Boolean(stats && stats.trimmed),
+      stableInitialTrim: Boolean(stableAt && Date.now() - stableAt < 30 * 60 * 1000),
+      stableInitialTrimAgeSec: stableAt ? Math.max(0, Math.round((Date.now() - stableAt) / 1000)) : null
+    };
+  }
+
   function collectMetricsForPopup() {
     const turns = queryMessageTurns();
     const total = turns.length;
@@ -1494,6 +1729,8 @@
       apiTrimmedCurrentConversation,
       contentVersion: CONTENT_VERSION,
       mainWorldVersion: document.documentElement ? document.documentElement.getAttribute("data-cgpt-lb-main-version") : null,
+      mainWorldFallbackInjected,
+      patchHealth: readPatchHealth(),
       settings: { ...settings },
       dom: { ...lastDomMetrics, nodes: countDomNodes() },
       api: readApiStats(),
@@ -1672,10 +1909,12 @@
     if (navigationTimer) clearInterval(navigationTimer);
     if (maintenanceTimer) clearInterval(maintenanceTimer);
     if (activeReplyWatchdogTimer) clearInterval(activeReplyWatchdogTimer);
+    if (autoCollapseTimer) clearTimeout(autoCollapseTimer);
     if (scanTimer) clearTimeout(scanTimer);
     navigationTimer = 0;
     maintenanceTimer = 0;
     activeReplyWatchdogTimer = 0;
+    autoCollapseTimer = 0;
     maintenanceScheduled = false;
     scanTimer = 0;
     lastDomMetrics = { total: 0, hidden: 0, visible: 0 };

@@ -1,4 +1,5 @@
-.cgpt-lb-hidden {
+.cgpt-lb-hidden,
+[data-cgpt-lb-hidden="true"] {
   display: none !important;
   content-visibility: hidden !important;
 }

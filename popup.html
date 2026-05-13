@@ -159,6 +159,7 @@
       <button id="checkGitUpdate" type="button">업데이트 확인</button>
     </div>
     <div class="button-grid">
+      <button id="tryChromeAutoUpdate" type="button">Chrome 자동 업데이트 시도</button>
       <button id="downloadGitUpdate" type="button" disabled>최신 ZIP 다운로드</button>
       <button id="openGitRelease" type="button">릴리스 열기</button>
       <button id="openExtensionsPage" type="button">확장 관리 열기</button>
@@ -176,6 +177,10 @@
     <div id="metricMain" class="metric-main">계산 중</div>
     <div id="metricSub" class="metric-sub">팝업이 열려 있을 때만 계산합니다.</div>
     <div id="metricLines"></div>
+    <div class="button-grid">
+      <button id="applyFastPreset" type="button">빠른 초기 로딩 프리셋</button>
+      <button id="reinjectPatch" type="button">패치 재주입</button>
+    </div>
   </section>
 
   <label>
@@ -209,6 +214,11 @@
   </label>
 
   <label>
+    <span>불러온 과거 메시지 주기적 접기</span>
+    <input id="autoCollapseLoadedMessages" type="checkbox">
+  </label>
+
+  <label>
     <span>자동 정리 주기(초)</span>
     <input id="maintenanceIntervalSec" type="number" min="10" max="300" step="5">
   </label>
@@ -216,12 +226,12 @@
   <div class="row">
     <label>
       <span>처음 표시할 최근 턴</span>
-      <input id="visibleTurns" type="number" min="1" max="100" step="1">
+      <input id="visibleTurns" type="number" min="1" max="20" step="1">
     </label>
 
     <label>
       <span>더 보기 배치</span>
-      <input id="loadMoreBatch" type="number" min="1" max="100" step="1">
+      <input id="loadMoreBatch" type="number" min="1" max="20" step="1">
     </label>
 
     <label>
@@ -251,7 +261,7 @@
   </div>
 
   <div class="hint">
-    응답 micro-cache는 기본 1개입니다. 네트워크 안전 모드에서는 초기 conversation 로딩 1회만 줄이고, 답변 생성·thinking/reasoning·스트림 복구 중에는 원본 conversation 응답을 통과시킵니다. 예상 속도 향상 계산은 팝업을 열 때만 실행됩니다.
+    응답 micro-cache는 기본 1개입니다. v1.4.0 기본값은 첫 로딩을 더 빠르게 하기 위해 최근 2턴 중심으로 시작하며, 더보기로 불러온 과거 메시지는 자동 정리 주기마다 다시 접습니다. 답변 생성·thinking/reasoning·스트림 복구 중에는 원본 conversation 응답을 통과시킵니다. 자동 설치/업데이트는 Chrome Web Store 또는 self-hosted CRX 설치에서만 Chrome update check가 가능하고, 개발자 모드 unpacked 설치는 릴리스 ZIP 다운로드 후 폴더 교체가 필요합니다.
   </div>
   <div id="saved"></div>
 

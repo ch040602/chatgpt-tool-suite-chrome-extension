@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const MAIN_WORLD_VERSION = "1.1.0";
-  const FETCH_PATCH_FLAG = "__CGPT_LONG_CHAT_LOADER_FETCH_PATCHED_V110__";
+  const MAIN_WORLD_VERSION = "1.4.0";
+  const FETCH_PATCH_FLAG = "__CGPT_LONG_CHAT_LOADER_FETCH_PATCHED_V140__";
   const HISTORY_PATCH_FLAG = "__CGPT_LONG_CHAT_LOADER_HISTORY_PATCHED__";
   const SETTINGS_KEY = "cgptLongChatLoader.settings";
   const SETTINGS_ATTR = "data-cgpt-lb-settings";
@@ -29,24 +29,27 @@
   const RESPONSE_CACHE_TTL_MS = 60_000;
   const STATS_TTL_MS = 180_000;
   const CACHE_MEMORY_PRESSURE_RATIO = 0.75;
-  const CACHE_SUSPEND_AFTER_MUTATION_MS = 5 * 60 * 1000;
-  const CACHE_SUSPEND_AFTER_ACTIVE_MS = 6 * 60 * 1000;
+  const CACHE_SUSPEND_AFTER_MUTATION_MS = 75 * 1000;
+  const CACHE_SUSPEND_AFTER_ACTIVE_MS = 90 * 1000;
   const THINKING_BYPASS_MS = 15 * 60 * 1000;
   const SAFETY_LOCK_MS = 30 * 60 * 1000;
-  const LIVE_TRIM_BYPASS_AFTER_MUTATION_MS = 6 * 60 * 1000;
-  const LIVE_TRIM_BYPASS_AFTER_ACTIVE_MS = 6 * 60 * 1000;
+  const LIVE_TRIM_BYPASS_AFTER_MUTATION_MS = 75 * 1000;
+  const LIVE_TRIM_BYPASS_AFTER_ACTIVE_MS = 90 * 1000;
+  const INITIAL_TRIM_ROUTE_TTL_MS = 30 * 60 * 1000;
+  const ACTIVE_NODE_RECENCY_MS = 30 * 60 * 1000;
+  const NATIVE_FETCH_KEY = "__CGPT_LONG_CHAT_LOADER_NATIVE_FETCH__";
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
     apiTrimEnabled: true,
     safeNetworkMode: true,
-    visibleTurns: 3,
-    loadMoreBatch: 4,
-    prefetchBatches: 1,
+    visibleTurns: 2,
+    loadMoreBatch: 2,
+    prefetchBatches: 0,
     apiCacheEntries: 1,
-    apiCacheMaxKb: 512,
+    apiCacheMaxKb: 256,
     maintenanceEnabled: true,
-    maintenanceIntervalSec: 45,
+    maintenanceIntervalSec: 60,
     cssContainmentEnabled: true,
     showStatus: false,
     debug: false
@@ -58,7 +61,7 @@
   let cacheSuspendedReason = "";
   let liveTrimBypassUntil = 0;
   let liveTrimBypassReason = "";
-  const initialTrimDoneRoutes = new Set();
+  const initialTrimDoneRoutes = new Map();
 
   markMainWorldVersion();
   installLocationChangePatch();
@@ -71,6 +74,7 @@
     if (!raw) return;
     try {
       settingsFromBridge = normalizeSettings(JSON.parse(raw));
+      initialTrimDoneRoutes.clear();
       pruneCache(settingsFromBridge.apiCacheEntries);
     } catch {
       settingsFromBridge = null;
@@ -92,8 +96,9 @@
   }, { passive: true });
   window.addEventListener("pagehide", () => responseCache.clear(), { once: true });
 
-  const originalFetch = window.fetch;
+  const originalFetch = typeof window[NATIVE_FETCH_KEY] === "function" ? window[NATIVE_FETCH_KEY] : window.fetch;
   if (typeof originalFetch !== "function") return;
+  try { window[NATIVE_FETCH_KEY] = originalFetch; } catch { /* ignore */ }
 
   window.fetch = async function patchedFetch(input, init) {
     const requestUrl = getRequestUrl(input);
@@ -136,20 +141,18 @@
 
     if (isLiveTrimBypassActive()) {
       responseCache.clear();
-      if (settings.safeNetworkMode) markInitialTrimDoneForCurrentRoute(requestUrl);
+      // Do not mark the route as initial-trimmed while live protection is bypassing rewrite.
       signalLiveTrimBypass("live reply protection", requestUrl);
       signalSafeBypass(liveTrimBypassReason || "live reply protection", requestUrl);
       debug(settings, "live trim bypass: returning original conversation response", requestUrl, liveTrimBypassReason);
       return originalFetch.call(this, input, init);
     }
 
-    if (settings.safeNetworkMode && isInitialTrimDoneForCurrentRoute(requestUrl)) {
-      responseCache.clear();
-      clearTrimSignal();
-      signalSafeBypass("safe mode post-initial original pass", requestUrl);
-      debug(settings, "safe mode post-initial original pass", requestUrl);
-      return originalFetch.call(this, input, init);
-    }
+    // v1.4.0: do not return the full conversation after the first trimmed response.
+    // ChatGPT often performs follow-up conversation GETs during hydration; passing
+    // those through made the page repopulate every old message after refresh.
+    // Stable GETs are trimmed continuously. Active generation/thinking/recovery still
+    // bypasses rewrite through the liveTrimBypass path above.
 
     const keepRenderableMessages = calculateKeepRenderableMessages(settings);
     const cacheKey = `${requestUrl}::keep=${keepRenderableMessages}`;
@@ -243,7 +246,8 @@
         effectiveCurrentNodeChanged: Boolean(trimResult.effectiveCurrentNodeChanged),
         thinkingOrReasoningActive: Boolean(trimResult.thinkingOrReasoningActive),
         safeNetworkMode: Boolean(settings.safeNetworkMode),
-        initialOnly: Boolean(settings.safeNetworkMode),
+        initialOnly: false,
+        stableRefreshTrim: Boolean(settings.safeNetworkMode),
         cacheSuspended: Boolean(cacheSuspended || isResponseCacheSuspended())
       };
 
@@ -256,7 +260,8 @@
         stats.liveTrimBypass = true;
         signalLiveTrimBypass(activeReason, requestUrl);
         signalSafeBypass(activeReason, requestUrl);
-        if (settings.safeNetworkMode) markInitialTrimDoneForCurrentRoute(requestUrl);
+        // Active/thinking responses are deliberately passed through and must not consume
+        // the one stable initial-trim slot for this route.
         debug(settings, activeReason + " detected; returning original conversation response", requestUrl);
         return buildResponse(meta, text, jsonLike);
       }
@@ -278,7 +283,7 @@
     const rewritten = buildResponse(meta, body, jsonLike);
     text = "";
 
-    if (stats && settings.safeNetworkMode) markInitialTrimDoneForCurrentRoute(requestUrl);
+    if (stats && settings.safeNetworkMode && shouldMarkInitialTrimDone(stats)) markInitialTrimDoneForCurrentRoute(requestUrl, stats);
 
     if (stats && stats.trimmed) {
       stats.cacheStored = putCached(settings, cacheKey, { body, stats, meta });
@@ -403,8 +408,8 @@
       enabled: Boolean(merged.enabled),
       apiTrimEnabled: Boolean(merged.apiTrimEnabled),
       safeNetworkMode: merged.safeNetworkMode === false ? false : true,
-      visibleTurns: clampInt(merged.visibleTurns, 1, 100, DEFAULT_SETTINGS.visibleTurns),
-      loadMoreBatch: clampInt(merged.loadMoreBatch, 1, 100, DEFAULT_SETTINGS.loadMoreBatch),
+      visibleTurns: clampInt(merged.visibleTurns, 1, 20, DEFAULT_SETTINGS.visibleTurns),
+      loadMoreBatch: clampInt(merged.loadMoreBatch, 1, 20, DEFAULT_SETTINGS.loadMoreBatch),
       prefetchBatches: clampInt(merged.prefetchBatches, 0, 30, DEFAULT_SETTINGS.prefetchBatches),
       apiCacheEntries: clampInt(cacheValue, 1, RESPONSE_CACHE_HARD_MAX, DEFAULT_SETTINGS.apiCacheEntries),
       apiCacheMaxKb: clampInt(merged.apiCacheMaxKb, 128, 4096, DEFAULT_SETTINGS.apiCacheMaxKb),
@@ -472,11 +477,42 @@
   }
 
   function isInitialTrimDoneForCurrentRoute(url) {
-    return initialTrimDoneRoutes.has(currentRouteKeyFromUrl(url));
+    const key = currentRouteKeyFromUrl(url);
+    const entry = initialTrimDoneRoutes.get(key);
+    if (!entry) return false;
+    if (Date.now() - Number(entry.timestamp || 0) > INITIAL_TRIM_ROUTE_TTL_MS) {
+      initialTrimDoneRoutes.delete(key);
+      return false;
+    }
+    return Boolean(entry.stable);
   }
 
-  function markInitialTrimDoneForCurrentRoute(url) {
-    initialTrimDoneRoutes.add(currentRouteKeyFromUrl(url));
+  function markInitialTrimDoneForCurrentRoute(url, stats) {
+    const key = currentRouteKeyFromUrl(url);
+    initialTrimDoneRoutes.set(key, {
+      stable: true,
+      timestamp: Date.now(),
+      trimmed: Boolean(stats && stats.trimmed),
+      totalRenderableMessages: Number(stats && stats.totalRenderableMessages) || 0,
+      keptRenderableMessages: Number(stats && stats.keptRenderableMessages) || 0
+    });
+    try {
+      const root = document.documentElement;
+      if (root) {
+        root.setAttribute("data-cgpt-lb-stable-initial-trim", "true");
+        root.setAttribute("data-cgpt-lb-stable-initial-trim-at", String(Date.now()));
+      }
+    } catch {
+      // Non-critical bridge update.
+    }
+  }
+
+  function shouldMarkInitialTrimDone(stats) {
+    if (!stats) return false;
+    if (stats.activeGeneration || stats.thinkingOrReasoningActive || stats.effectiveCurrentNodeChanged) return false;
+    const total = Number(stats.totalRenderableMessages || stats.totalVisibleMessages || 0);
+    if (!total) return false;
+    return Boolean(stats.trimmed) || total <= Number(stats.keepRenderableMessages || stats.keepVisibleMessages || 0);
   }
 
   function matchesUnusualActivityText(value) {
@@ -557,7 +593,7 @@
 
   function isThinkingReason(value) {
     const text = String(value || "").toLowerCase();
-    return /think|reason|thought|analysis|analyz|추론|생각|분석/.test(text);
+    return /think|reason|analysis|analyz|추론|생각|분석/.test(text);
   }
 
   function signalStats(stats) {
@@ -1034,7 +1070,7 @@
   function collectActiveGenerationNodeIds(mapping) {
     const ids = [];
     for (const id of Object.keys(mapping || {})) {
-      if (isActiveGenerationNode(mapping[id])) ids.push(id);
+      if (isActiveGenerationNode(mapping[id]) && isRecentlyUpdatedNode(mapping[id], ACTIVE_NODE_RECENCY_MS)) ids.push(id);
     }
     return sortNodeIdsByTime(mapping, ids);
   }
@@ -1042,7 +1078,7 @@
   function collectThinkingOrReasoningNodeIds(mapping) {
     const ids = [];
     for (const id of Object.keys(mapping || {})) {
-      if (isThinkingOrReasoningNode(mapping[id])) ids.push(id);
+      if (isThinkingOrReasoningNode(mapping[id]) && isRecentlyUpdatedNode(mapping[id], ACTIVE_NODE_RECENCY_MS)) ids.push(id);
     }
     return sortNodeIdsByTime(mapping, ids);
   }
@@ -1086,6 +1122,13 @@
       if (Number.isFinite(n) && n > 0) return n;
     }
     return 0;
+  }
+
+  function isRecentlyUpdatedNode(node, ttlMs) {
+    const time = getNodeSortTime(node);
+    if (!time) return true;
+    const ms = time > 1e12 ? time : time * 1000;
+    return Date.now() - ms <= Math.max(60_000, Number(ttlMs) || ACTIVE_NODE_RECENCY_MS);
   }
 
   function chooseEffectiveCurrentNode(mapping, currentNode, activeGenerationIds) {
@@ -1156,7 +1199,7 @@
     const contentType = String(content.content_type || content.type || "").toLowerCase();
     const metadataText = safeStringify(metadata).toLowerCase();
     const markerText = `${contentType} ${status} ${metadataText}`;
-    const hasThinkingMarker = /think|thinking|thought|reason|reasoning|analysis|analyz/.test(markerText);
+    const hasThinkingMarker = /think|thinking|reason|reasoning|analysis|analyz/.test(markerText);
     if (!hasThinkingMarker) return false;
 
     // Treat thinking/reasoning nodes as live only when they look unfinished or current.
@@ -1164,7 +1207,7 @@
     if (message.end_turn === false) return true;
     if (metadata.is_complete === false || metadata.complete === false || metadata.done === false) return true;
     if (metadata.finish_details === null && status && !status.includes("success")) return true;
-    if (/thinking|reasoning|thought|analysis/.test(contentType) && message.end_turn !== true && !/(finish|finished|success|complete|completed|done)/.test(status)) return true;
+    if (/thinking|reasoning|analysis/.test(contentType) && message.end_turn !== true && !/(finish|finished|success|complete|completed|done)/.test(status)) return true;
     return false;
   }
 
