@@ -10,7 +10,7 @@ function createElement(id) {
   const listeners = {};
   return {
     id,
-    type: id.endsWith("Enabled") || id === "enabled" || id === "showStatus" || id === "debug" ? "checkbox" : "button",
+    type: id === "uiLanguage" ? "select" : id.endsWith("Enabled") || id === "enabled" || id === "showStatus" || id === "debug" ? "checkbox" : "button",
     value: "",
     checked: false,
     textContent: "",
@@ -26,7 +26,7 @@ function createElement(id) {
   };
 }
 
-async function loadPopup() {
+async function loadPopup(storageData = {}) {
   const elements = new Map();
   const documentListeners = {};
   const createdTabs = [];
@@ -60,7 +60,7 @@ async function loadPopup() {
       storage: {
         local: {
           get(_keys, callback) {
-            callback({});
+            callback({ ...storageData });
           },
           set(_value, callback) {
             callback();
@@ -85,13 +85,19 @@ async function loadPopup() {
 }
 
 (async () => {
-  const { elements, createdTabs } = await loadPopup();
+  const koPopup = await loadPopup({ "cgptLongChatLoader.uiLanguage": "ko" });
 
-  elements.get("openReadme").click();
-  elements.get("openReadmeKo").click();
+  koPopup.elements.get("openReadme").click();
 
-  assert.deepEqual(createdTabs.map((tab) => tab.url), [
-    "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.md",
+  assert.deepEqual(koPopup.createdTabs.map((tab) => tab.url), [
     "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.ko.md"
+  ]);
+
+  const enPopup = await loadPopup({ "cgptLongChatLoader.uiLanguage": "en" });
+
+  enPopup.elements.get("openReadme").click();
+
+  assert.deepEqual(enPopup.createdTabs.map((tab) => tab.url), [
+    "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.md"
   ]);
 })();

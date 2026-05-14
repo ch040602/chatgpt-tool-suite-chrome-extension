@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const MAIN_WORLD_VERSION = "1.5.2";
+  const MAIN_WORLD_VERSION = "1.5.3";
   const FETCH_PATCH_FLAG = "__CGPT_LONG_CHAT_LOADER_FETCH_PATCHED_V152__";
   const HISTORY_PATCH_FLAG = "__CGPT_LONG_CHAT_LOADER_HISTORY_PATCHED__";
   const SETTINGS_KEY = "cgptLongChatLoader.settings";
@@ -54,7 +54,7 @@
     mathCopyEnabled: true,
     mathCopyAutoOnCopy: true,
     mathCopyShowSelectionButton: true,
-    mathCopyPreferPngFallback: true,
+    mathCopyLatexMode: true,
     showStatus: false,
     debug: false
   });
@@ -152,7 +152,7 @@
       return originalFetch.call(this, input, init);
     }
 
-    // v1.5.2: do not return the full conversation after the first trimmed response.
+    // v1.5.3: do not return the full conversation after the first trimmed response.
     // ChatGPT often performs follow-up conversation GETs during hydration; passing
     // those through made the page repopulate every old message after refresh.
     // Stable GETs are trimmed continuously. Active generation/thinking/recovery still

@@ -1,6 +1,6 @@
 # Update helper notes
 
-v1.5.2 uses a simple GitHub ZIP update helper.
+v1.5.3 uses a simple GitHub ZIP update helper.
 
 The popup only exposes:
 
@@ -29,7 +29,7 @@ Chrome does not provide an extension API that lets an unpacked extension overwri
 Upload a release asset named like:
 
 ```text
-chatgpt-long-chat-loader-v1.5.2.zip
+chatgpt-long-chat-loader-v1.5.3.zip
 ```
 
 The popup prefers ZIP release assets. If no release asset exists, it can fall back to the repository source ZIP.

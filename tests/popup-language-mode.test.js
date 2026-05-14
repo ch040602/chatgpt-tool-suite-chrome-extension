@@ -101,9 +101,9 @@ async function loadPopup(storageData = {}) {
   assert.equal(koPopup.document.documentElement.lang, "ko");
   assert.equal(koPopup.elements.get("uiLanguage").value, "ko");
   assert.equal(koPopup.elements.get("enabledLabel").textContent, "확장 기능 사용");
-  assert.equal(koPopup.elements.get("openReadmeKo").textContent, "한국어 README");
+  assert.equal(koPopup.elements.get("openReadme").textContent, "README 열기");
 
-  koPopup.elements.get("openReadmeKo").click();
+  koPopup.elements.get("openReadme").click();
   assert.equal(
     koPopup.createdTabs.at(-1).url,
     "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.ko.md"
@@ -114,7 +114,7 @@ async function loadPopup(storageData = {}) {
   assert.equal(enPopup.document.documentElement.lang, "en");
   assert.equal(enPopup.elements.get("uiLanguage").value, "en");
   assert.equal(enPopup.elements.get("enabledLabel").textContent, "Enable extension");
-  assert.equal(enPopup.elements.get("openReadme").textContent, "English README");
+  assert.equal(enPopup.elements.get("openReadme").textContent, "Open README");
 
   const language = enPopup.elements.get("uiLanguage");
   language.value = "ko";

@@ -20,7 +20,7 @@
         const loadMoreBatchNum = Number(current.loadMoreBatch);
         const prefetchBatchesNum = Number(current.prefetchBatches);
 
-        if (defaultsVersion !== "1.5.2" && looksLikeOldDefault) {
+        if (defaultsVersion !== "1.5.3" && looksLikeOldDefault) {
           patch.visibleTurns = 2;
           patch.loadMoreBatch = 2;
           patch.prefetchBatches = 0;
@@ -41,9 +41,9 @@
         if (!Object.prototype.hasOwnProperty.call(current, "mathCopyEnabled")) patch.mathCopyEnabled = true;
         if (!Object.prototype.hasOwnProperty.call(current, "mathCopyAutoOnCopy")) patch.mathCopyAutoOnCopy = true;
         if (!Object.prototype.hasOwnProperty.call(current, "mathCopyShowSelectionButton")) patch.mathCopyShowSelectionButton = true;
-        if (!Object.prototype.hasOwnProperty.call(current, "mathCopyPreferPngFallback")) patch.mathCopyPreferPngFallback = true;
+        if (!Object.prototype.hasOwnProperty.call(current, "mathCopyLatexMode")) patch.mathCopyLatexMode = true;
 
-        patch[DEFAULTS_VERSION_KEY] = "1.5.2";
+        patch[DEFAULTS_VERSION_KEY] = "1.5.3";
         if (Object.keys(patch).length) chrome.storage.local.set(patch);
       });
     });

@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.5.2";
-  const CONTENT_BOOT_FLAG = "__CGPT_LONG_CHAT_LOADER_CONTENT_ACTIVE_V152__";
+  const CONTENT_VERSION = "1.5.3";
+  const CONTENT_BOOT_FLAG = "__CGPT_LONG_CHAT_LOADER_CONTENT_ACTIVE_V153_LATEX_ONLY__";
   if (window[CONTENT_BOOT_FLAG]) {
     try {
       window.dispatchEvent(new CustomEvent("cgpt-lb-force-scan", { detail: CONTENT_VERSION }));
@@ -36,12 +36,12 @@
   const HIDDEN_CLASS = "cgpt-lb-hidden";
   const CONTAINED_CLASS = "cgpt-lb-contained";
   const LIVE_PROTECTED_CLASS = "cgpt-lb-live-protected";
-  const LOAD_MORE_ID = "cgpt-lb-load-more-v152";
+  const LOAD_MORE_ID = "cgpt-lb-load-more-v153";
   const LEGACY_LOAD_MORE_ID = "cgpt-lb-load-more";
   const STATUS_ID = "cgpt-lb-status";
-  const MATH_COPY_BUTTON_ID = "cgpt-lb-math-copy-v152";
-  const MATH_COPY_TOAST_ID = "cgpt-lb-math-copy-toast-v152";
-  const RUNTIME_STYLE_ID = "cgpt-lb-runtime-style-v152";
+  const MATH_COPY_BUTTON_ID = "cgpt-lb-math-copy-v153";
+  const MATH_COPY_TOAST_ID = "cgpt-lb-math-copy-toast-v153";
+  const RUNTIME_STYLE_ID = "cgpt-lb-runtime-style-v153";
   const TRIM_MARKER_KEY = "cgptLongChatLoader.trimMarkers.v1";
   const DEBUG_LOG_KEY = "cgptLongChatLoader.debugLog.v1";
   const TRIM_MARKER_TTL_MS = 6 * 60 * 60 * 1000;
@@ -110,7 +110,7 @@
     mathCopyEnabled: true,
     mathCopyAutoOnCopy: true,
     mathCopyShowSelectionButton: true,
-    mathCopyPreferPngFallback: true,
+    mathCopyLatexMode: true,
     showStatus: false,
     debug: false
   });
@@ -224,7 +224,7 @@
       mathCopyEnabled: merged.mathCopyEnabled === false ? false : true,
       mathCopyAutoOnCopy: merged.mathCopyAutoOnCopy === false ? false : true,
       mathCopyShowSelectionButton: merged.mathCopyShowSelectionButton === false ? false : true,
-      mathCopyPreferPngFallback: merged.mathCopyPreferPngFallback === false ? false : true,
+      mathCopyLatexMode: merged.mathCopyLatexMode === false ? false : true,
       showStatus: Boolean(merged.showStatus),
       debug: Boolean(merged.debug)
     };
@@ -306,7 +306,7 @@
       writeSettingsBridge();
       ensureObserverTarget();
       restartMaintenanceLoop();
-      if (!settings.mathCopyEnabled || !settings.mathCopyShowSelectionButton) hideMathCopyButton();
+      if (!settings.mathCopyEnabled || !settings.mathCopyLatexMode || !settings.mathCopyShowSelectionButton) hideMathCopyButton();
       else scheduleMathSelectionCheck();
       scanAndApply();
     });
@@ -328,7 +328,7 @@
       }
 
       if (message.type === "cgpt-lb-copy-selection-math") {
-        copySelectedMathForOffice({ source: "popup", includePng: true })
+        copySelectedMathForOffice({ source: "popup" })
           .then((result) => sendResponse(result))
           .catch((error) => sendResponse({ ok: false, error: String(error && error.message ? error.message : error) }));
         return true;
@@ -1745,35 +1745,30 @@
   }
 
   function handleOfficeMathCopyEvent(event) {
-    if (!settings.enabled || !settings.mathCopyEnabled || !settings.mathCopyAutoOnCopy) return;
+    if (!settings.enabled || !settings.mathCopyEnabled || !settings.mathCopyLatexMode || !settings.mathCopyAutoOnCopy) return;
     if (!event || !event.clipboardData) return;
     const target = event.target instanceof Element ? event.target : null;
     if (target && target.closest && target.closest("textarea, input, [contenteditable='true'], [role='textbox']")) return;
 
-    const payload = buildOfficeMathClipboardPayload({ includeImage: Boolean(settings.mathCopyPreferPngFallback) });
-    if (!payload.ok || !payload.hasMath) return;
+    const payload = buildOfficeMathClipboardPayload();
+    if (!payload.ok || !payload.hasMath || !payload.plainText) return;
 
     try {
-      // Automatic Ctrl/Cmd+C must not provide competing Office formats.
-      // v1.5.1 previously used HTML-only, but some PowerPoint builds paste the MathML text layer
-      // instead of the intended formula. Keep an immediate LaTeX fallback only, then
-      // asynchronously replace it with a single PNG when the user enabled PPT-safe fallback.
+      // LaTeX-only mode: write exactly one clipboard representation.
+      // This prevents Office/PPT from pasting the KaTeX visual glyph text before the TeX formula.
       event.preventDefault();
       event.stopImmediatePropagation();
       try { event.clipboardData.clearData(); } catch { /* Ignore DataTransfer limitations. */ }
       event.clipboardData.setData("text/plain", payload.plainText);
-      showMathCopyToast(`Office 수식 복사 적용 · ${payload.formulaCount || 1}개 · ${settings.mathCopyPreferPngFallback ? "PNG 준비 중" : "LaTeX"}`);
-      debug("office math copy event", { formulaCount: payload.formulaCount, plainLength: payload.plainText.length, format: "text/plain-fallback" });
-      if (settings.mathCopyPreferPngFallback) {
-        writePayloadAsPngOnly(payload, { source: "copy-event" }).catch((error) => debug("office math async PNG copy failed", error));
-      }
+      showMathCopyToast(`${uiText("LaTeX 수식으로 복사했습니다", "Copied formula as LaTeX")} · ${payload.formulaCount || 1}`);
+      debug("office math LaTeX-only copy event", { formulaCount: payload.formulaCount, plainLength: payload.plainText.length });
     } catch (error) {
       debug("office math copy event failed", error);
     }
   }
 
   function scheduleMathSelectionCheck() {
-    if (!settings.enabled || !settings.mathCopyEnabled || !settings.mathCopyShowSelectionButton) {
+    if (!settings.enabled || !settings.mathCopyEnabled || !settings.mathCopyLatexMode || !settings.mathCopyShowSelectionButton) {
       hideMathCopyButton();
       return;
     }
@@ -1793,7 +1788,7 @@
   }
 
   function updateMathCopyButtonForSelection() {
-    if (!settings.enabled || !settings.mathCopyEnabled || !settings.mathCopyShowSelectionButton) {
+    if (!settings.enabled || !settings.mathCopyEnabled || !settings.mathCopyLatexMode || !settings.mathCopyShowSelectionButton) {
       hideMathCopyButton();
       return;
     }
@@ -1809,7 +1804,7 @@
     const top = Math.max(8, Math.min(window.innerHeight - 42, Math.round(info.rect.top - 42)));
     mathCopyButton.style.left = `${left}px`;
     mathCopyButton.style.top = `${top}px`;
-    mathCopyButton.textContent = `${uiText("수식 Office 복사", "Copy formula for Office")} · ${info.formulaCount || 1}`;
+    mathCopyButton.textContent = `${uiText("LaTeX 수식 복사", "Copy formula as LaTeX")} · ${info.formulaCount || 1}`;
     mathCopyButton.hidden = false;
     mathCopyButton.removeAttribute("hidden");
   }
@@ -1823,7 +1818,7 @@
     mathCopyButton.type = "button";
     mathCopyButton.hidden = true;
     mathCopyButton.dataset.cgptLbUi = "true";
-    mathCopyButton.title = uiText("선택한 ChatGPT 수식을 Office/PPT용 단일 형식으로 복사", "Copy the selected ChatGPT formula as one Office/PowerPoint-safe format");
+    mathCopyButton.title = uiText("선택한 ChatGPT 수식을 LaTeX 텍스트로만 복사", "Copy the selected ChatGPT formula as LaTeX text only");
     mathCopyButton.addEventListener("mousedown", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1831,7 +1826,7 @@
     mathCopyButton.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const result = await copySelectedMathForOffice({ source: "selection-button", includePng: true });
+      const result = await copySelectedMathForOffice({ source: "selection-button" });
       if (!result.ok) showMathCopyToast(result.error || "수식 복사 실패");
     }, { capture: true });
     document.body.appendChild(mathCopyButton);
@@ -1849,99 +1844,65 @@
     if (!settings.enabled || !settings.mathCopyEnabled) {
       return { ok: false, error: uiText("Office 수식 복사 기능이 꺼져 있습니다.", "Office formula copy is disabled.") };
     }
+    if (!settings.mathCopyLatexMode) {
+      return { ok: false, error: uiText("LaTeX 모드가 꺼져 있습니다.", "LaTeX mode is disabled.") };
+    }
 
-    const includePng = Boolean(options.includePng && settings.mathCopyPreferPngFallback);
-    const payload = buildOfficeMathClipboardPayload({ includeImage: includePng });
-    if (!payload.ok) {
+    const payload = buildOfficeMathClipboardPayload();
+    if (!payload.ok || !payload.plainText) {
       hideMathCopyButton();
       showMathCopyToast(payload.error || uiText("선택한 수식을 찾지 못했습니다.", "No formula was found in the selection."));
       return payload;
     }
 
     try {
-      let mode = "LaTeX only";
-      if (includePng) {
-        const pngResult = await writePayloadAsPngOnly(payload, { source: options.source || "selection-button" });
-        if (pngResult && pngResult.ok) mode = "PNG only";
-        else if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(payload.plainText);
-        else return legacyCopyText(payload.plainText);
-      } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(payload.plainText);
       } else {
         return legacyCopyText(payload.plainText);
       }
       hideMathCopyButton();
-      showMathCopyToast(`${uiText("Office 수식 복사 완료", "Office formula copied")} · ${payload.formulaCount || 1} · ${mode}`);
-      debug("office math copied", { source: options.source || "unknown", formulaCount: payload.formulaCount, includePng, mode });
+      showMathCopyToast(`${uiText("LaTeX 수식 복사 완료", "LaTeX formula copied")} · ${payload.formulaCount || 1}`);
+      debug("office math copied as LaTeX only", { source: options.source || "unknown", formulaCount: payload.formulaCount, plainLength: payload.plainText.length });
       return {
         ok: true,
         formulaCount: payload.formulaCount,
         plainLength: payload.plainText.length,
-        htmlLength: payload.html.length,
-        includePng,
-        mode
+        htmlLength: 0,
+        mode: "LaTeX only"
       };
     } catch (error) {
-      // Keep a useful fallback so the user still gets LaTeX instead of broken glyph soup.
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(payload.plainText);
-          showMathCopyToast(uiText("PNG 복사는 실패했지만 LaTeX 텍스트로 복사했습니다.", "PNG copy failed; copied LaTeX text instead."));
-          return { ok: true, fallback: "text/plain", error: String(error && error.message ? error.message : error) };
-        }
-      } catch {
-        // Fall through to error response.
-      }
       const message = String(error && error.message ? error.message : error);
       showMathCopyToast(`${uiText("수식 복사 실패", "Formula copy failed")} · ${message.slice(0, 80)}`);
       return { ok: false, error: message };
     }
   }
 
-  function buildOfficeMathClipboardPayload(options = {}) {
+  function buildOfficeMathClipboardPayload() {
     const selectionInfo = getSelectionInfo();
     if (!selectionInfo) return { ok: false, error: uiText("선택 영역이 없습니다.", "There is no active selection.") };
     if (!selectionInfo.hasMath) return { ok: false, error: uiText("선택 영역에서 수식을 감지하지 못했습니다.", "No formula was detected in the selection.") };
 
-    const officeRoot = document.createElement("div");
-    officeRoot.className = "cgpt-office-selection";
-    for (const range of selectionInfo.ranges) {
-      try { officeRoot.appendChild(range.cloneContents()); }
-      catch { /* Ignore broken range clone. */ }
-    }
-
+    // LaTeX-only mode deliberately ignores the visual text layer produced by KaTeX/MathJax.
+    // Only semantic TeX annotations, data-* TeX attributes, aria TeX, or explicit TeX text are used.
     const actualEntries = dedupeMathEntries(getMathEntriesFromRanges(selectionInfo.ranges));
-    const formulaOnlySelection = actualEntries.length > 0 && isFormulaOnlySelection(selectionInfo.ranges);
-    let entries = [];
-    if (formulaOnlySelection) {
-      // For a pure formula selection, rebuild the clipboard fragment from the semantic formula only.
-      // This avoids copying visual glyph text before the Office-compatible MathML/HTML representation.
-      officeRoot.textContent = "";
-      appendOfficeMathEntries(officeRoot, actualEntries);
-      entries = actualEntries.slice();
-    } else {
-      cleanupClonedSelection(officeRoot);
-      entries = dedupeMathEntries(transformMathNodesForOffice(officeRoot));
-      if (!entries.length && actualEntries.length) {
-        officeRoot.textContent = "";
-        appendOfficeMathEntries(officeRoot, actualEntries);
-        entries = actualEntries.slice();
-      }
+    let entries = actualEntries.filter((entry) => normalizeLatex(entry && entry.latex));
+    if (!entries.length) entries = dedupeMathEntries(inferLatexEntriesFromText(selectionInfo.text));
+
+    const plainText = entries.map((entry) => formatLatexForPlain(entry)).filter(Boolean).join("\n").trim();
+    if (!plainText) {
+      return { ok: false, error: uiText("LaTeX 수식을 추출하지 못했습니다.", "Could not extract a LaTeX formula from the selection.") };
     }
-    const fallbackLatexEntries = entries.length ? entries : actualEntries.length ? actualEntries : inferLatexEntriesFromText(selectionInfo.text);
-    const plainText = buildPlainTextForOffice(officeRoot, selectionInfo.text, fallbackLatexEntries);
-    const bodyHtml = officeRoot.innerHTML || escapeHtml(plainText);
-    const html = buildOfficeHtml(bodyHtml);
 
     return {
       ok: true,
       hasMath: true,
-      formulaCount: Math.max(1, fallbackLatexEntries.length || selectionInfo.formulaCount || 0),
+      formulaCount: Math.max(1, entries.length || selectionInfo.formulaCount || 0),
       plainText,
-      html,
-      bodyHtml,
-      renderHtml: buildRenderHtmlForPng(bodyHtml),
-      includeImage: Boolean(options.includeImage)
+      html: "",
+      bodyHtml: "",
+      renderHtml: "",
+      includeImage: false
     };
   }
 
@@ -2181,12 +2142,33 @@
     if (block) return block[1];
     const dollar = text.match(/(?<!\\)\$([^$\n]{1,500})(?<!\\)\$/s);
     if (dollar) return dollar[1];
-    if (/\\begin\{|\\frac|\\sum|\\int|\\sqrt|[_^{}]/.test(text)) return text;
+
+    // If a selected KaTeX/MathJax fragment collapses to visible glyph text followed by TeX,
+    // drop everything before the first real TeX command. This fixes outputs like:
+    //   R=[visual matrix glyphs]\mathbf{R}=\begin{bmatrix}...
+    const command = text.search(/\\(?:begin|mathbf|mathrm|mathcal|mathbb|operatorname|hat|bar|vec|frac|sum|prod|int|sqrt|left|right|cos|sin|tan|log|exp|theta|alpha|beta|gamma|lambda|partial|nabla|cdot|times|leq|geq|neq|infty)\b/);
+    if (command >= 0) return text.slice(command).trim();
+
+    // Do not return visual-only math text. It is the source of the duplicate/plain prefix.
     return "";
   }
 
   function normalizeLatex(value) {
-    return String(value || "").replace(/\u200b/g, "").replace(/\s+/g, " ").trim();
+    let text = String(value || "");
+    try {
+      // Convert Unicode mathematical alphanumeric symbols inside copied TeX,
+      // e.g. \begin{𝑏𝑚𝑎𝑡𝑟𝑖𝑥} -> \begin{bmatrix} and 𝑅 -> R.
+      text = text.normalize("NFKC");
+    } catch {
+      // normalize() can theoretically fail on malformed strings; keep raw text.
+    }
+    return text
+      .replace(/\u200b/g, "")
+      .replace(/[−﹣－]/g, "-")
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   function inferLatexEntriesFromText(text) {
@@ -2204,17 +2186,33 @@
         if (latex) entries.push({ latex, display: pattern.source.includes("\\$\\$") || pattern.source.includes("\\\\\\["), mathElement: null });
       }
     }
-    if (!entries.length && /\\begin\{|\\frac|\\sum|\\int|\\sqrt/.test(value)) {
-      entries.push({ latex: normalizeLatex(value), display: /\\begin\{/.test(value), mathElement: null });
+    if (!entries.length) {
+      const inferred = normalizeLatex(inferLatexFromText(value));
+      if (inferred) entries.push({ latex: inferred, display: /\\begin\{/.test(inferred), mathElement: null });
     }
     return entries;
   }
 
   function buildPlainTextForOffice(root, fallbackText, entries) {
-    const serialized = serializePlainNode(root).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-    if (serialized && /\\\(|\\\[|\$\$|\\begin\{|\\frac|\\sum|\\int|\\sqrt/.test(serialized)) return serialized;
+    // v1.5.3: Office often receives both KaTeX/MathJax visual glyph text and
+    // the semantic TeX annotation in the selected fragment. Returning serialized
+    // selection text first caused outputs such as:
+    //   visual-math-glyphs + \begin{bmatrix}...
+    // For math-copy mode, prefer the semantic LaTeX entries only. This keeps the
+    // clipboard text as a single formula instead of plain-looking math followed by LaTeX.
     const entryText = (entries || []).map((entry) => formatLatexForPlain(entry)).filter(Boolean).join("\n");
     if (entryText) return entryText;
+
+    const serialized = serializePlainNode(root).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (serialized && /\\\(|\\\[|\$\$|\\begin\{|\\frac|\\sum|\\int|\\sqrt/.test(serialized)) {
+      const inferred = inferLatexEntriesFromText(serialized).map((entry) => formatLatexForPlain(entry)).filter(Boolean).join("\n");
+      if (inferred) return inferred;
+      return serialized;
+    }
+
+    const fallbackEntries = inferLatexEntriesFromText(fallbackText);
+    const fallbackLatex = fallbackEntries.map((entry) => formatLatexForPlain(entry)).filter(Boolean).join("\n");
+    if (fallbackLatex) return fallbackLatex;
     return String(fallbackText || "").trim();
   }
 
@@ -2243,54 +2241,9 @@
   function formatLatexForPlain(entry) {
     const latex = normalizeLatex(entry && entry.latex);
     if (!latex) return "";
-    return entry && entry.display ? `$$${latex}$$` : `\\(${latex}\\)`;
-  }
-
-  function buildOfficeHtml(bodyHtml) {
-    return `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt}.cgpt-office-selection{white-space:pre-wrap}.cgpt-office-math{font-family:"Cambria Math","Cambria",serif}.cgpt-office-math math{font-family:"Cambria Math","Cambria",serif}</style></head><body><div class="cgpt-office-selection">${bodyHtml}</div></body></html>`;
-  }
-
-  function buildRenderHtmlForPng(bodyHtml) {
-    return `<div xmlns="http://www.w3.org/1999/xhtml" style="display:inline-block;padding:10px 12px;background:white;color:black;font:20px/1.45 Calibri,Arial,sans-serif;white-space:pre-wrap;max-width:1400px;"><style>.cgpt-office-math,.cgpt-office-math math{font-family:'Cambria Math','Cambria',serif;font-size:1em}</style>${bodyHtml}</div>`;
-  }
-
-  async function writePayloadAsPngOnly(payload, options = {}) {
-    if (!payload || !payload.ok || !navigator.clipboard || !window.ClipboardItem) return { ok: false, reason: "clipboard-api-unavailable" };
-    const pngBlob = await renderOfficeSelectionPng(payload.renderHtml || payload.bodyHtml);
-    if (!pngBlob) return { ok: false, reason: "png-render-failed" };
-    await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
-    debug("office math PNG-only clipboard write", { source: options.source || "unknown", formulaCount: payload.formulaCount, bytes: pngBlob.size });
-    showMathCopyToast(`${uiText("Office 수식 복사 완료", "Office formula copied")} · ${payload.formulaCount || 1} · PNG`);
-    return { ok: true, mode: "PNG only", bytes: pngBlob.size };
-  }
-
-  async function renderOfficeSelectionPng(renderHtml) {
-    if (!renderHtml || typeof Image === "undefined") return null;
-    const width = Math.min(1600, Math.max(240, Math.round(Math.min(window.innerWidth || 900, 1000))));
-    const estimatedHeight = Math.min(1200, Math.max(120, Math.round(80 + String(renderHtml).length / 18)));
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${estimatedHeight}"><foreignObject width="100%" height="100%">${renderHtml}</foreignObject></svg>`;
-    const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-    const image = await loadImage(url);
-    const canvas = document.createElement("canvas");
-    const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-    canvas.width = Math.round(width * scale);
-    canvas.height = Math.round(estimatedHeight * scale);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.scale(scale, scale);
-    ctx.drawImage(image, 0, 0, width, estimatedHeight);
-    return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob && blob.size ? blob : null), "image/png"));
-  }
-
-  function loadImage(url) {
-    return new Promise((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error("PNG fallback rendering failed"));
-      image.src = url;
-    });
+    // Raw LaTeX only. Do not add \(...\) or $$...$$ wrappers; Office equation inputs
+    // and the requested LaTeX-only path work more predictably with the formula body.
+    return latex;
   }
 
   function legacyCopyText(text) {
@@ -2304,7 +2257,7 @@
     textarea.select();
     const ok = document.execCommand && document.execCommand("copy");
     textarea.remove();
-    showMathCopyToast(ok ? "LaTeX 텍스트로 복사했습니다." : "복사 실패");
+    showMathCopyToast(ok ? uiText("LaTeX 수식으로 복사했습니다.", "Copied formula as LaTeX.") : uiText("복사 실패", "Copy failed"));
     return { ok: Boolean(ok), fallback: "execCommand" };
   }
 
@@ -2339,11 +2292,11 @@
       enabled: Boolean(settings.mathCopyEnabled),
       autoOnCopy: Boolean(settings.mathCopyAutoOnCopy),
       selectionButton: Boolean(settings.mathCopyShowSelectionButton),
-      pngFallback: Boolean(settings.mathCopyPreferPngFallback),
+      latexMode: Boolean(settings.mathCopyLatexMode),
       selectionHasMath: Boolean(info && info.hasMath),
       formulaCount: info && info.formulaCount ? info.formulaCount : 0,
       buttonVisible: Boolean(mathCopyButton && !mathCopyButton.hidden),
-      clipboardWriteSupported: Boolean(navigator.clipboard && window.ClipboardItem)
+      clipboardWriteSupported: Boolean(navigator.clipboard && navigator.clipboard.writeText)
     };
   }
 

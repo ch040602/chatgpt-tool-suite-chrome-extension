@@ -85,12 +85,12 @@
   content-visibility: visible !important;
 }
 
-#cgpt-lb-math-copy-v152[hidden],
-#cgpt-lb-math-copy-toast-v152[hidden] {
+#cgpt-lb-math-copy-v153[hidden],
+#cgpt-lb-math-copy-toast-v153[hidden] {
   display: none !important;
 }
 
-#cgpt-lb-math-copy-v152 {
+#cgpt-lb-math-copy-v153 {
   position: fixed;
   z-index: 2147483001;
   padding: 7px 10px;
@@ -106,11 +106,11 @@
   white-space: nowrap;
 }
 
-#cgpt-lb-math-copy-v152:hover {
+#cgpt-lb-math-copy-v153:hover {
   background: color-mix(in srgb, Canvas 86%, CanvasText 14%);
 }
 
-#cgpt-lb-math-copy-toast-v152 {
+#cgpt-lb-math-copy-toast-v153 {
   position: fixed;
   right: 14px;
   bottom: 14px;

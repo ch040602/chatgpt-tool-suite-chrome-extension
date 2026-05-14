@@ -4,11 +4,11 @@ Chrome MV3 extension for reducing long ChatGPT conversation loading/RAM pressure
 
 - Default documentation: English
 - Korean documentation: [`README.ko.md`](./README.ko.md)
-- Version: `1.5.2`
+- Version: `1.5.3`
 
-## v1.5.2 focus
+## v1.5.3 focus
 
-v1.5.2 is based on the cleaned v1.5.0 GitHub-release UI and fixes the Office formula duplicate-paste path while preserving the Office/LaTeX math representation.
+v1.5.3 is based on the cleaned v1.5.0 GitHub-release UI and fixes the Office formula duplicate-paste path by copying only the semantic LaTeX text, without the KaTeX/MathJax visual glyph layer.
 
 Main changes:
 
@@ -19,7 +19,8 @@ Main changes:
 - Remove the previous long micro-cache guidance text from the popup.
 - Keep GitHub repository information internal; it is not shown as an editable popup field.
 - Add clearer copyright, license, third-party notice, and release-upload guidance.
-- Prevent duplicate PowerPoint pastes by writing only one Office-facing math clipboard format at a time.
+- Prevent duplicate PowerPoint pastes by writing only LaTeX plain text when LaTeX mode is enabled.
+- Remove the previous PNG/image copy mode.
 
 ## Features
 
@@ -38,11 +39,12 @@ This does **not** reduce server-side model context. It targets browser loading, 
 
 When selected ChatGPT content contains rendered math, the extension can correct the clipboard output:
 
-- `Ctrl+C` / `Cmd+C`: writes one fallback format first: LaTeX plain text. If PNG fallback is enabled, the extension then replaces it with a single PPT-safe PNG clipboard item.
-- Floating formula button: writes a single PPT-safe PNG when PNG fallback is enabled. If PNG creation fails, it falls back to LaTeX plain text.
-- The extension no longer writes HTML/MathML and plain text together, because that can produce duplicate PowerPoint pastes.
+- `Ctrl+C` / `Cmd+C`: writes only LaTeX plain text, such as `\begin{bmatrix}...\end{bmatrix}`.
+- Floating formula button: also writes only LaTeX plain text.
+- LaTeX mode can be turned on or off in the popup. When it is off, the extension leaves normal copy behavior untouched.
+- The previous PNG/image mode has been removed to avoid timing and duplicate-paste problems.
 
-For PowerPoint slides where the final visual result must be correct, use the floating formula-copy button first, or wait for the Ctrl/Cmd+C toast to report PNG copy completion before pasting.
+In PowerPoint, paste the copied text into an equation box or use the Office LaTeX-to-equation conversion path. This gives a stable editable equation path instead of a mixed visual-text-plus-LaTeX paste.
 
 ## Popup layout
 
@@ -80,7 +82,7 @@ For developer-mode/unpacked installs, Chrome cannot replace the local extension 
 5. Click **Load unpacked**.
 6. Select the extracted extension folder.
 7. Refresh existing ChatGPT tabs.
-8. Open the popup and confirm `API patch: MAIN 1.5.2`.
+8. Open the popup and confirm `API patch: MAIN 1.5.3`.
 
 ## Recommended settings
 
@@ -102,7 +104,7 @@ For developer-mode/unpacked installs, Chrome cannot replace the local extension 
 
 Open the popup and check:
 
-- `API patch`: should be `MAIN 1.5.2`.
+- `API patch`: should be `MAIN 1.5.3`.
 - `Patch status`: should include `MAIN detected`.
 - DOM hidden count should be greater than zero in a long conversation.
 - `Thinking shield` should return to idle after the answer completes.
@@ -111,9 +113,9 @@ For the fastest initial load, apply **Fast first-load preset** and refresh the C
 
 ## If formula copy fails in PowerPoint
 
-Use the floating formula-copy button rather than plain `Ctrl+C`. The button path gives PowerPoint a single PNG representation, which avoids the common duplicate paste of a plain-looking formula plus a LaTeX formula.
+Keep **LaTeX mode** enabled in the popup. The extension then copies only the semantic LaTeX formula and removes the front visual glyph text that caused outputs such as `visual-math-text + \begin{bmatrix}...`.
 
-If an editable equation is required, use `Ctrl+C` and paste into an Office equation-capable context. Office version and paste location can still affect whether the result becomes editable math.
+Paste the LaTeX into an Office equation-capable context. Office version and paste location can still affect whether the result becomes editable math.
 
 ## Privacy
 
@@ -143,7 +145,7 @@ This package is an original implementation. It was inspired by public approaches
 
 Before uploading a release:
 
-1. Confirm `manifest.json` version is `1.5.2`.
+1. Confirm `manifest.json` version is `1.5.3`.
 2. Confirm popup update UI shows only **Check update** and **Download latest ZIP**.
 3. Confirm both README files are present.
 4. Confirm `LICENSE` and `THIRD_PARTY_NOTICES.md` are included.

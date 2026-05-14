@@ -18,7 +18,7 @@
     mathCopyEnabled: true,
     mathCopyAutoOnCopy: true,
     mathCopyShowSelectionButton: true,
-    mathCopyPreferPngFallback: true,
+    mathCopyLatexMode: true,
     showStatus: false,
     debug: false
   });
@@ -85,7 +85,7 @@
       reinjectPatch: "패치 재주입",
       mathTitle: "Office 수식 복사",
       copySelectedMath: "선택 수식 복사",
-      mathCopyStatusIdle: "수식을 마우스로 드래그한 뒤 Ctrl/Cmd+C 또는 이 버튼을 사용합니다.",
+      mathCopyStatusIdle: "수식을 마우스로 드래그한 뒤 Ctrl/Cmd+C 또는 이 버튼으로 LaTeX만 복사합니다.",
       mathCopying: "선택 영역 복사 중...",
       mathCopyNeedChatGpt: "ChatGPT 탭에서 수식을 드래그한 뒤 사용하세요.",
       mathCopyDone: "복사 완료",
@@ -98,7 +98,7 @@
       mathCopyEnabledLabel: "Office 수식 복사 보정",
       mathCopyAutoOnCopyLabel: "Ctrl/Cmd+C 수식 자동 보정",
       mathCopyShowSelectionButtonLabel: "드래그 후 수식 복사 버튼",
-      mathCopyPreferPngFallbackLabel: "PPT 안전 이미지 우선",
+      mathCopyLatexModeLabel: "LaTeX 모드",
       showStatusLabel: "상태 배지 표시",
       maintenanceEnabledLabel: "대화 중 자동 정리",
       autoCollapseLoadedMessagesLabel: "불러온 과거 메시지 주기적 접기",
@@ -153,7 +153,7 @@
       reinjectPatch: "Reinject patch",
       mathTitle: "Office formula copy",
       copySelectedMath: "Copy selected formula",
-      mathCopyStatusIdle: "Drag-select a formula, then use Ctrl/Cmd+C or this button.",
+      mathCopyStatusIdle: "Drag-select a formula, then copy LaTeX only with Ctrl/Cmd+C or this button.",
       mathCopying: "Copying selection...",
       mathCopyNeedChatGpt: "Drag-select a formula in a ChatGPT tab first.",
       mathCopyDone: "Copied",
@@ -166,7 +166,7 @@
       mathCopyEnabledLabel: "Office formula copy correction",
       mathCopyAutoOnCopyLabel: "Auto-correct formula Ctrl/Cmd+C",
       mathCopyShowSelectionButtonLabel: "Show formula copy button after drag",
-      mathCopyPreferPngFallbackLabel: "Prefer PPT-safe image",
+      mathCopyLatexModeLabel: "LaTeX mode",
       showStatusLabel: "Show status badge",
       maintenanceEnabledLabel: "Auto cleanup during chat",
       autoCollapseLoadedMessagesLabel: "Periodically collapse loaded older messages",
@@ -237,7 +237,7 @@
   function storageSet(value) {
     return new Promise((resolve) => {
       if (!hasChromeStorage()) return resolve(false);
-      const payload = value && typeof value === "object" ? { ...value, "cgptLongChatLoader.defaultsVersion": "1.5.2" } : value;
+      const payload = value && typeof value === "object" ? { ...value, "cgptLongChatLoader.defaultsVersion": "1.5.3" } : value;
       chrome.storage.local.set(payload, () => resolve(!chrome.runtime.lastError));
     });
   }
@@ -303,7 +303,7 @@
       (!Object.prototype.hasOwnProperty.call(source, "prefetchBatches") || Number(source.prefetchBatches) === 1) &&
       (!Object.prototype.hasOwnProperty.call(source, "apiCacheMaxKb") || Number(source.apiCacheMaxKb) === 512) &&
       (!Object.prototype.hasOwnProperty.call(source, "maintenanceIntervalSec") || Number(source.maintenanceIntervalSec) === 45);
-    if (defaultsVersion !== "1.5.2" && looksLikeOldDefault) {
+    if (defaultsVersion !== "1.5.3" && looksLikeOldDefault) {
       merged = {
         ...merged,
         visibleTurns: 2,
@@ -335,7 +335,7 @@
       mathCopyEnabled: merged.mathCopyEnabled === false ? false : true,
       mathCopyAutoOnCopy: merged.mathCopyAutoOnCopy === false ? false : true,
       mathCopyShowSelectionButton: merged.mathCopyShowSelectionButton === false ? false : true,
-      mathCopyPreferPngFallback: merged.mathCopyPreferPngFallback === false ? false : true,
+      mathCopyLatexMode: merged.mathCopyLatexMode === false ? false : true,
       showStatus: Boolean(merged.showStatus),
       debug: Boolean(merged.debug)
     };
@@ -642,7 +642,7 @@
     const parts = [];
     parts.push(mathCopy.autoOnCopy ? (getCurrentLanguage() === "ko" ? "Ctrl+C 보정" : "Ctrl+C correction") : (getCurrentLanguage() === "ko" ? "수동" : "manual"));
     if (mathCopy.selectionButton) parts.push(getCurrentLanguage() === "ko" ? "선택 버튼" : "selection button");
-    if (mathCopy.pngFallback) parts.push(getCurrentLanguage() === "ko" ? "PPT 안전 이미지" : "PPT-safe image");
+    parts.push(mathCopy.latexMode ? (getCurrentLanguage() === "ko" ? "LaTeX만" : "LaTeX only") : (getCurrentLanguage() === "ko" ? "LaTeX 꺼짐" : "LaTeX off"));
     if (mathCopy.selectionHasMath) parts.push(`${getCurrentLanguage() === "ko" ? "선택" : "selected"} ${formatNumber(mathCopy.formulaCount || 1)}`);
     if (!mathCopy.clipboardWriteSupported) parts.push(getCurrentLanguage() === "ko" ? "텍스트 fallback" : "text fallback");
     return parts.join(" · ");
@@ -1030,7 +1030,7 @@
       mathCopyEnabled: true,
       mathCopyAutoOnCopy: true,
       mathCopyShowSelectionButton: true,
-      mathCopyPreferPngFallback: true,
+      mathCopyLatexMode: true,
       showStatus: false
     });
     renderSettings(next);
