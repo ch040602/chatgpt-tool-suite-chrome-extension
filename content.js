@@ -974,15 +974,18 @@
       jumpToBranchTargets(ids);
     });
 
-    const renderSelected = (row) => {
-      if (!row) return;
-      detail.dataset.targetIds = row.targetIds.join("\t");
-      detail.textContent = `분기 전: ${row.before || "-"}\n시작: ${row.start || "-"}`;
-      for (const item of graph.querySelectorAll(".cgpt-lb-branch-split")) {
-        item.classList.remove("cgpt-lb-branch-split-active");
+    const renderSelected = (selection, jump) => {
+      if (!selection) return;
+      detail.dataset.targetIds = selection.targetIds.join("\t");
+      detail.textContent = selection.type === "before"
+        ? `분기 전: ${selection.before || "-"}`
+        : `분기 전: ${selection.before || "-"}\n시작: ${selection.label || "-"}`;
+      for (const item of graph.querySelectorAll(".cgpt-lb-branch-node-action")) {
+        item.classList.remove("cgpt-lb-branch-node-active");
       }
-      const active = graph.querySelector(`[data-branch-index="${String(row.index)}"]`);
-      if (active) active.classList.add("cgpt-lb-branch-split-active");
+      const active = graph.querySelector(`[data-branch-node-key="${cssStringEscape(selection.key)}"]`);
+      if (active) active.classList.add("cgpt-lb-branch-node-active");
+      if (jump) jumpToBranchTargets(selection.targetIds);
     };
 
     graph.appendChild(renderBranchGraphSvg(summaryRows, {
@@ -992,7 +995,7 @@
 
     list.append(graph, detail);
     branchMapPanel.appendChild(list);
-    renderSelected(summaryRows[0]);
+    renderSelected(defaultBranchGraphSelection(summaryRows));
     applyBranchMapCollapsedState();
   }
 
@@ -1015,11 +1018,13 @@
     const rows = Array.isArray(summaryRows) ? summaryRows : [];
     const compact = Boolean(options.compact);
     const xMain = compact ? 11 : 14;
-    const xBranch = compact ? 34 : 46;
-    const yStep = compact ? 18 : 27;
+    const xBranch = compact ? 36 : 52;
+    const nodeGap = compact ? 14 : 19;
+    const splitGap = compact ? 10 : 14;
     const pad = compact ? 8 : 11;
-    const width = compact ? 46 : 62;
-    const height = Math.max(compact ? 24 : 34, pad * 2 + Math.max(0, rows.length - 1) * yStep);
+    const width = compact ? 50 : 68;
+    const layout = layoutBranchGraphRows(rows, { pad, nodeGap, splitGap });
+    const height = Math.max(compact ? 26 : 36, layout.height);
     const svg = createSvgElement("svg");
     svg.setAttribute("class", compact ? "cgpt-lb-branch-svg cgpt-lb-branch-svg-mini" : "cgpt-lb-branch-svg");
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -1027,68 +1032,154 @@
     svg.setAttribute("height", String(height));
     svg.setAttribute("aria-hidden", "true");
 
-    if (rows.length > 1) {
+    if (layout.parentYs.length > 1) {
       const trunk = createSvgElement("path");
       trunk.setAttribute("class", "cgpt-lb-branch-edge cgpt-lb-branch-edge-trunk");
-      trunk.setAttribute("d", `M ${xMain} ${pad} L ${xMain} ${pad + (rows.length - 1) * yStep}`);
+      trunk.setAttribute("d", `M ${xMain} ${layout.parentYs[0]} L ${xMain} ${layout.parentYs[layout.parentYs.length - 1]}`);
       svg.appendChild(trunk);
     }
 
-    rows.forEach((row, index) => {
-      const y = pad + index * yStep;
+    layout.splits.forEach((split) => {
+      const row = split.row;
       const group = createSvgElement("g");
       group.setAttribute("class", "cgpt-lb-branch-split");
       group.setAttribute("data-branch-index", String(row.index));
-      if (!compact) {
-        group.setAttribute("tabindex", "0");
-        group.setAttribute("role", "button");
-      }
-      group.setAttribute("aria-label", `분기 전 ${row.before || "-"} 시작 ${row.start || "-"}`);
-      if (typeof options.onSelect === "function") {
-        group.addEventListener("click", (event) => {
-          if (typeof event.stopPropagation === "function") event.stopPropagation();
-          options.onSelect(row);
-        });
-        group.addEventListener("keydown", (event) => {
-          if (event.key !== "Enter" && event.key !== " ") return;
-          if (typeof event.preventDefault === "function") event.preventDefault();
-          options.onSelect(row);
-        });
+
+      for (const branch of split.branches) {
+        const edge = createSvgElement("path");
+        edge.setAttribute("class", "cgpt-lb-branch-edge cgpt-lb-branch-edge-fork");
+        const mid = Math.round((xMain + xBranch) / 2);
+        edge.setAttribute("d", `M ${xMain} ${split.parentY} C ${mid} ${split.parentY}, ${mid} ${branch.y}, ${xBranch} ${branch.y}`);
+        group.appendChild(edge);
       }
 
-      const hit = createSvgElement("rect");
-      hit.setAttribute("class", "cgpt-lb-branch-hit");
-      hit.setAttribute("x", String(Math.min(xMain, xBranch) - 7));
-      hit.setAttribute("y", String(y - 10));
-      hit.setAttribute("width", String(Math.abs(xBranch - xMain) + 14));
-      hit.setAttribute("height", "20");
-      hit.setAttribute("rx", "6");
-      group.appendChild(hit);
+      group.appendChild(renderBranchGraphNode({
+        cx: xMain,
+        cy: split.parentY,
+        radius: compact ? 3.3 : 4.3,
+        className: "cgpt-lb-branch-node-before",
+        selection: {
+          key: `before-${row.index}`,
+          type: "before",
+          before: row.before,
+          label: row.before,
+          targetIds: row.beforeId ? [row.beforeId] : []
+        },
+        compact,
+        onSelect: options.onSelect
+      }));
 
-      const edge = createSvgElement("path");
-      edge.setAttribute("class", "cgpt-lb-branch-edge cgpt-lb-branch-edge-fork");
-      const mid = Math.round((xMain + xBranch) / 2);
-      edge.setAttribute("d", `M ${xMain} ${y} C ${mid} ${y - 1}, ${mid} ${y + 1}, ${xBranch} ${y}`);
-      group.appendChild(edge);
-
-      const before = createSvgElement("circle");
-      before.setAttribute("class", "cgpt-lb-branch-node cgpt-lb-branch-node-before");
-      before.setAttribute("cx", String(xMain));
-      before.setAttribute("cy", String(y));
-      before.setAttribute("r", compact ? "3.2" : "4");
-      group.appendChild(before);
-
-      const after = createSvgElement("circle");
-      after.setAttribute("class", "cgpt-lb-branch-node cgpt-lb-branch-node-after");
-      after.setAttribute("cx", String(xBranch));
-      after.setAttribute("cy", String(y));
-      after.setAttribute("r", compact ? "3.2" : "4");
-      group.appendChild(after);
+      for (const branch of split.branches) {
+        group.appendChild(renderBranchGraphNode({
+          cx: xBranch,
+          cy: branch.y,
+          radius: compact ? 3.3 : 4.3,
+          className: "cgpt-lb-branch-node-after",
+          selection: {
+            key: `start-${row.index}-${branch.node.id || branch.index}`,
+            type: "start",
+            before: row.before,
+            label: branch.node.preview,
+            targetIds: branch.node.id ? [branch.node.id] : []
+          },
+          compact,
+          onSelect: options.onSelect
+        }));
+      }
 
       svg.appendChild(group);
     });
 
     return svg;
+  }
+
+  function layoutBranchGraphRows(rows, metrics) {
+    const splits = [];
+    const parentYs = [];
+    let cursor = Number(metrics.pad) || 0;
+    for (const row of rows) {
+      const branches = Array.isArray(row && row.branches) ? row.branches : [];
+      const branchCount = Math.max(1, branches.length);
+      const span = Math.max(0, branchCount - 1) * metrics.nodeGap;
+      const splitHeight = Math.max(metrics.nodeGap, span);
+      const parentY = cursor + splitHeight / 2;
+      const firstBranchY = parentY - span / 2;
+      const branchPoints = branches.map((node, index) => ({
+        node,
+        index,
+        y: firstBranchY + index * metrics.nodeGap
+      }));
+      splits.push({ row, parentY, branches: branchPoints });
+      parentYs.push(parentY);
+      cursor += splitHeight + metrics.splitGap;
+    }
+    return {
+      splits,
+      parentYs,
+      height: Math.max(metrics.pad * 2, cursor - metrics.splitGap + metrics.pad)
+    };
+  }
+
+  function renderBranchGraphNode({ cx, cy, radius, className, selection, compact, onSelect }) {
+    const group = createSvgElement("g");
+    group.setAttribute("class", `cgpt-lb-branch-node-action cgpt-lb-branch-node-action-${selection.type}`);
+    group.setAttribute("data-branch-node-key", selection.key);
+    group.setAttribute("data-branch-target-id", selection.targetIds[0] || "");
+    group.setAttribute("aria-label", selection.type === "before" ? `분기 전 ${selection.label || "-"}` : `시작 ${selection.label || "-"}`);
+    if (!compact) {
+      group.setAttribute("tabindex", "0");
+      group.setAttribute("role", "button");
+    }
+    if (typeof onSelect === "function") {
+      group.addEventListener("click", (event) => {
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        onSelect(selection, true);
+      });
+      group.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        onSelect(selection, true);
+      });
+    }
+
+    const hit = createSvgElement("rect");
+    hit.setAttribute("class", "cgpt-lb-branch-hit");
+    hit.setAttribute("x", String(cx - 8));
+    hit.setAttribute("y", String(cy - 8));
+    hit.setAttribute("width", "16");
+    hit.setAttribute("height", "16");
+    hit.setAttribute("rx", "6");
+    group.appendChild(hit);
+
+    const circle = createSvgElement("circle");
+    circle.setAttribute("class", `cgpt-lb-branch-node ${className}`);
+    circle.setAttribute("cx", String(cx));
+    circle.setAttribute("cy", String(cy));
+    circle.setAttribute("r", String(radius));
+    group.appendChild(circle);
+    return group;
+  }
+
+  function defaultBranchGraphSelection(rows) {
+    const first = Array.isArray(rows) ? rows[0] : null;
+    if (!first) return null;
+    const firstBranch = Array.isArray(first.branches) ? first.branches[0] : null;
+    if (firstBranch) {
+      return {
+        key: `start-${first.index}-${firstBranch.id || 0}`,
+        type: "start",
+        before: first.before,
+        label: firstBranch.preview,
+        targetIds: firstBranch.id ? [firstBranch.id] : []
+      };
+    }
+    return {
+      key: `before-${first.index}`,
+      type: "before",
+      before: first.before,
+      label: first.before,
+      targetIds: first.beforeId ? [first.beforeId] : []
+    };
   }
 
   function createSvgElement(tagName) {
@@ -1125,10 +1216,10 @@
         index: Number(index),
         depth: Number(index) + 1,
         before: summary && summary.before,
-        start: summary && summary.start,
-        targetIds: Array.isArray(summary && summary.targetIds) ? summary.targetIds : []
+        beforeId: summary && summary.beforeId || "",
+        branches: Array.isArray(summary && summary.branches) ? summary.branches : []
       }))
-      .filter((row) => row.before || row.start)
+      .filter((row) => row.before || row.branches.length)
       .sort((a, b) => a.depth - b.depth);
   }
 
@@ -1150,22 +1241,39 @@
 
     for (const [index, variants] of byIndex) {
       if (variants.size < 2) continue;
-      const starts = [];
-      const targetIds = [];
+      const branches = [];
       for (const nodes of variants.values()) {
         const startNode = findFirstUserPromptNodeAtOrAfter(nodes, index);
-        if (startNode && startNode.preview) starts.push(startNode.preview);
-        if (startNode && startNode.id) targetIds.push(startNode.id);
+        if (startNode && startNode.preview) {
+          branches.push({
+            id: startNode.id,
+            preview: startNode.preview
+          });
+        }
       }
       const beforeNode = findPreviousUserPromptNode(currentNodes, index - 1);
-      if (beforeNode && beforeNode.id) targetIds.push(beforeNode.id);
       summaries[index] = {
         before: beforeNode && beforeNode.preview || "",
-        start: compactText(uniqueStrings(starts).join(" / "), 80),
-        targetIds: uniqueStrings(targetIds)
+        beforeId: beforeNode && beforeNode.id || "",
+        branches: uniqueBranchPromptNodes(branches)
       };
     }
     return summaries;
+  }
+
+  function uniqueBranchPromptNodes(nodes) {
+    const seen = new Set();
+    const result = [];
+    for (const node of nodes) {
+      const key = node && (node.id || node.preview);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        id: String(node.id || ""),
+        preview: compactText(node.preview, 80)
+      });
+    }
+    return result;
   }
 
   function findPreviousUserPromptNode(nodes, startIndex) {
@@ -2750,22 +2858,22 @@
       #${BRANCH_MAP_ID} .cgpt-lb-branch-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-title{font-weight:700;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-close{width:22px;height:22px;padding:0;border:1px solid rgba(128,128,128,.34);border-radius:999px;background:Canvas;color:CanvasText;font:14px/1 system-ui;cursor:pointer;}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-compare{display:grid;grid-template-columns:62px minmax(0,1fr);gap:8px;align-items:start;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-compare{display:grid;grid-template-columns:68px minmax(0,1fr);gap:8px;align-items:start;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-empty{grid-column:1 / -1;padding:6px 7px;border-left:2px solid color-mix(in srgb, CanvasText 32%, Canvas 68%);background:color-mix(in srgb, Canvas 86%, CanvasText 14%);border-radius:6px;}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-graph{display:flex;justify-content:center;padding-top:1px;min-width:62px;overflow:visible;}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-svg{display:block;width:62px;height:auto;overflow:visible;}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-svg-mini{width:46px;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-graph{display:flex;justify-content:center;padding-top:1px;min-width:68px;overflow:visible;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-svg{display:block;width:68px;height:auto;overflow:visible;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-svg-mini{width:50px;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-edge{fill:none;stroke-linecap:round;stroke-linejoin:round;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-edge-trunk{stroke:color-mix(in srgb, CanvasText 34%, Canvas 66%);stroke-width:1.4;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-edge-fork{stroke:#3b82f6;stroke-width:2;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-hit{fill:transparent;}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-split{cursor:pointer;outline:none;}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-split-active .cgpt-lb-branch-hit{fill:color-mix(in srgb, #3b82f6 18%, transparent);}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-split-active .cgpt-lb-branch-edge-fork{stroke-width:2.8;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-node-action{cursor:pointer;outline:none;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-node-active .cgpt-lb-branch-hit{fill:color-mix(in srgb, #3b82f6 18%, transparent);}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-split:has(.cgpt-lb-branch-node-active) .cgpt-lb-branch-edge-fork{stroke-width:2.8;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-node{stroke:Canvas;stroke-width:1.5;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-node-before{fill:color-mix(in srgb, CanvasText 62%, Canvas 38%);}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-node-after{fill:#16a34a;}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-split-active .cgpt-lb-branch-node-after{stroke:#3b82f6;stroke-width:2.2;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-node-active .cgpt-lb-branch-node{stroke:#3b82f6;stroke-width:2.2;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-rail{font-size:12px;text-align:center;color:color-mix(in srgb, CanvasText 70%, Canvas 30%);}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-count{text-align:right;color:color-mix(in srgb, CanvasText 62%, Canvas 38%);}
