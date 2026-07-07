@@ -24,7 +24,7 @@
   const SAFETY_LOCK_KEY = "cgptLongChatLoader.safetyLockUntil";
   const SAFETY_LOCK_ATTR = "data-cgpt-lb-safety-lock-until";
   const SAFE_BYPASS_REASON_ATTR = "data-cgpt-lb-safe-bypass-reason";
-  const DEBUG_PREFIX = "[ChatGPT Long Chat Loader]";
+  const DEBUG_PREFIX = "[ChatGPT Tool Suite]";
   const RESPONSE_CACHE_HARD_MAX = 2;
   const RESPONSE_CACHE_TTL_MS = 60_000;
   const STATS_TTL_MS = 180_000;

@@ -141,7 +141,7 @@ async function loadPopup(storageData) {
 
   assert.equal(blobs.length, 1);
   assert.equal(blobs[0].type, "application/json");
-  assert.match(document.clickedElements.at(-1).download, /^chatgpt-long-chat-loader-debug-\d{8}-\d{6}\.json$/);
+  assert.match(document.clickedElements.at(-1).download, /^chatgpt-tool-suite-debug-\d{8}-\d{6}\.json$/);
   assert.equal(document.clickedElements.at(-1).href, objectUrls[0]);
 
   const exported = JSON.parse(blobs[0].parts.join(""));

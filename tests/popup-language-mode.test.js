@@ -110,7 +110,7 @@ async function loadPopup(storageData = {}) {
   koPopup.elements.get("openReadme").click();
   assert.equal(
     koPopup.createdTabs.at(-1).url,
-    "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.ko.md"
+    "https://github.com/ch040602/chatgpt-tool-suite-chrome-extension/blob/main/README.ko.md"
   );
 
   const enPopup = await loadPopup({ "cgptLongChatLoader.uiLanguage": "en" });

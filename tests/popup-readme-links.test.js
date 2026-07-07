@@ -90,7 +90,7 @@ async function loadPopup(storageData = {}) {
   koPopup.elements.get("openReadme").click();
 
   assert.deepEqual(koPopup.createdTabs.map((tab) => tab.url), [
-    "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.ko.md"
+    "https://github.com/ch040602/chatgpt-tool-suite-chrome-extension/blob/main/README.ko.md"
   ]);
 
   const enPopup = await loadPopup({ "cgptLongChatLoader.uiLanguage": "en" });
@@ -98,6 +98,6 @@ async function loadPopup(storageData = {}) {
   enPopup.elements.get("openReadme").click();
 
   assert.deepEqual(enPopup.createdTabs.map((tab) => tab.url), [
-    "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.md"
+    "https://github.com/ch040602/chatgpt-tool-suite-chrome-extension/blob/main/README.md"
   ]);
 })();

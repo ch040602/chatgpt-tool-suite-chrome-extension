@@ -27,7 +27,7 @@
     showStatus: false,
     debug: false
   });
-  const GITHUB_REPO = "ch040602/Chatgpt-web-booster_chrome_extentsion";
+  const GITHUB_REPO = "ch040602/chatgpt-tool-suite-chrome-extension";
 
   const ids = Object.keys(DEFAULT_SETTINGS);
   const NUMBER_SETTING_IDS = new Set([
@@ -59,8 +59,8 @@
   const GITHUB_API_ROOT = "https://api.github.com/repos";
   let latestUpdateInfo = null;
   const README_URLS = Object.freeze({
-    en: "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.md",
-    ko: "https://github.com/ch040602/Chatgpt-web-booster_chrome_extentsion/blob/main/README.ko.md"
+    en: "https://github.com/ch040602/chatgpt-tool-suite-chrome-extension/blob/main/README.md",
+    ko: "https://github.com/ch040602/chatgpt-tool-suite-chrome-extension/blob/main/README.ko.md"
   });
 
 
@@ -991,7 +991,7 @@
       return;
     }
 
-    const filename = sanitizeFilename(best.downloadName || `chatgpt-long-chat-loader-${best.version || "latest"}.zip`);
+    const filename = sanitizeFilename(best.downloadName || `chatgpt-tool-suite-${best.version || "latest"}.zip`);
     if (chrome.downloads && chrome.downloads.download) {
       chrome.downloads.download({ url: best.downloadUrl, filename, saveAs: true }, (downloadId) => {
         if (chrome.runtime.lastError) {
@@ -1280,12 +1280,12 @@
     const payload = {
       schemaVersion: 1,
       exportedAt: exportedAt.toISOString(),
-      extension: "ChatGPT Long Chat Loader",
+      extension: "ChatGPT Tool Suite",
       purpose: "Debug log export for GPT-assisted issue analysis",
       entries
     };
     downloadTextFile(
-      `chatgpt-long-chat-loader-debug-${formatTimestampForFile(exportedAt)}.json`,
+      `chatgpt-tool-suite-debug-${formatTimestampForFile(exportedAt)}.json`,
       JSON.stringify(payload, null, 2),
       "application/json"
     );

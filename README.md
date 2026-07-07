@@ -1,6 +1,14 @@
-# ChatGPT Long Chat Loader
+# ChatGPT Tool Suite
 
-Chrome MV3 extension for reducing long ChatGPT conversation loading/RAM pressure and for copying ChatGPT formulas into Word/PowerPoint more safely.
+Chrome MV3 toolkit for making ChatGPT easier to use in long, branching, work-heavy conversations.
+
+It bundles practical ChatGPT utilities in one extension:
+
+- long-chat loading and memory pressure reduction,
+- branch summary tracking with jump links,
+- queued next prompts with editable pending items,
+- Office-safe formula copy for Word and PowerPoint,
+- a lightweight update helper for unpacked installs.
 
 - Default documentation: English
 - Korean documentation: [`README.ko.md`](./README.ko.md)
@@ -8,7 +16,7 @@ Chrome MV3 extension for reducing long ChatGPT conversation loading/RAM pressure
 
 ## v1.5.3 focus
 
-v1.5.3 adds visible ChatGPT branch-path tracking and a next-prompt queue while preserving the v1.5.2 long-chat and Office formula fixes.
+v1.5.3 turns the project from a long-chat loader into a broader ChatGPT tool suite. It adds visible branch tracking and queued prompts while preserving the long-chat and Office formula fixes.
 
 Main changes:
 
@@ -20,7 +28,7 @@ Main changes:
 - Keep GitHub repository information internal; it is not shown as an editable popup field.
 - Add clearer copyright, license, third-party notice, and release-upload guidance.
 - Prevent duplicate PowerPoint pastes by writing only one Office-facing math clipboard format at a time.
-- Show a compact branch tree panel for the current ChatGPT conversation route, including connected branch variants with prompt previews around branch points.
+- Show a compact branch panel for the current ChatGPT conversation route. The expanded panel shows only branch summaries: the last prompt before a split and the first prompt after each branch starts.
 - Queue prompts with `Tab` by default, review/edit them in a queue panel, and send them one at a time after the current response and request-limit notices clear.
 
 ## Features
@@ -48,7 +56,7 @@ For PowerPoint slides where the final visual result must be correct, use the flo
 
 ### Branch path and next prompt queue
 
-When **Show branch path** is enabled, the ChatGPT tab shows a compact branch panel for the current conversation path plus connected branch variants previously observed in the tab. Use **Branch panel shortcut** to open or collapse it; the default is `Alt+B`. The collapsed mini overlay stays clickable and shows only a simple graph without prompt text. The panel records visible message IDs and short previews in `sessionStorage` for the current tab. At a detected branch point, it shows the last user prompt before the split and the first user prompts at the branch starts.
+When **Show branch path** is enabled, the ChatGPT tab shows a compact branch panel for the current conversation path plus connected branch variants previously observed in the tab. Use **Branch panel shortcut** to open or collapse it; the default is `Alt+B`. The collapsed mini overlay stays clickable and shows only a simple graph without prompt text. The expanded view shows branch summaries only: the last user prompt before a split and the first user prompts at the branch starts. Clicking a branch summary jumps to that visible conversation point when it exists in the current session.
 
 When **Queue next prompt** is enabled, type a prompt while ChatGPT is answering and press the configured queue shortcut. The default is `Tab`. Each queued prompt appears in an editable queue panel. Open or collapse that panel with **Queue panel shortcut**; the default is `Alt+Q`, and the floating **Queue** button or collapsed queue mini overlay opens it by click. To change either shortcut, focus its popup field and press the exact key combination once. The extension sends queued prompts one by one, waiting until live response indicators disappear and request-limit text such as `Too many requests` or `rate limit` clears.
 
@@ -146,7 +154,7 @@ Copyright (c) 2026 ch040602.
 
 This project is released under the MIT License. See [`LICENSE`](./LICENSE).
 
-If you publish a fork, update the copyright holder, repository name, release asset names, and README links.
+If you publish a fork, update the copyright holder, repository name, release asset names, and README links. The canonical repository name is `chatgpt-tool-suite-chrome-extension`.
 
 ## Third-party notices
 
@@ -160,7 +168,7 @@ Before uploading a release:
 2. Confirm popup update UI shows only **Check update** and **Download latest ZIP**.
 3. Confirm both README files are present.
 4. Confirm `LICENSE` and `THIRD_PARTY_NOTICES.md` are included.
-5. Build the ZIP from the extension folder root.
+5. Build the ZIP from the extension folder root. Recommended asset name: `chatgpt-tool-suite-chrome-extension-v1.5.3.zip`.
 6. Upload the ZIP as a GitHub Release asset.
 7. Verify the popup can detect the remote version and download the ZIP.
 

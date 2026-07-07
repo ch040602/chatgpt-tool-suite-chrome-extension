@@ -33,6 +33,9 @@ class ElementMock {
     if (this.tagName === "TEXTAREA" || this.tagName === "INPUT") this.value = "";
     this._textContent = "";
     this.clickCount = 0;
+    this.scrollIntoViewCount = 0;
+    this.lastScrollIntoViewArg = null;
+    this.rect = null;
   }
 
   get id() {
@@ -41,6 +44,14 @@ class ElementMock {
 
   set id(value) {
     this.setAttribute("id", value);
+  }
+
+  get className() {
+    return Array.from(this.classList.values).join(" ");
+  }
+
+  set className(value) {
+    this.setAttribute("class", value);
   }
 
   get textContent() {
@@ -132,7 +143,13 @@ class ElementMock {
 
   focus() {}
   select() {}
-  scrollIntoView() {}
+  scrollIntoView(arg) {
+    this.scrollIntoViewCount += 1;
+    this.lastScrollIntoViewArg = arg;
+  }
+  getBoundingClientRect() {
+    return this.rect || { top: 1000, bottom: 1100, width: 100, height: 100 };
+  }
 
   contains(node) {
     if (node === this) return true;
@@ -261,7 +278,7 @@ function createModifiedKeyEvent(key, target, modifiers = {}) {
   };
 }
 
-async function loadContent(storageData = {}, initialSessionValues = {}) {
+async function loadContent(storageData = {}, initialSessionValues = {}, options = {}) {
   const intervals = [];
   const documentElement = new ElementMock("html");
   const head = new ElementMock("head");
@@ -279,12 +296,14 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
 
   documentElement.append(head, body);
   body.append(main, composer, sendButton);
-  main.append(
-    makeTurn("u1", "user", "Question 1"),
-    makeTurn("a1", "assistant", "Answer 1"),
-    makeTurn("u2", "user", "Question 2"),
-    busy
-  );
+  const turns = Array.isArray(options.turns) && options.turns.length
+    ? options.turns
+    : [
+      makeTurn("u1", "user", "Question 1"),
+      makeTurn("a1", "assistant", "Answer 1"),
+      makeTurn("u2", "user", "Question 2")
+    ];
+  main.append(...turns, busy);
 
   const documentListeners = new Map();
   const document = {
@@ -319,6 +338,7 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
 
   const windowListeners = new Map();
   const window = {
+    innerHeight: Number(options.innerHeight) || 720,
     addEventListener(type, handler) {
       if (!windowListeners.has(type)) windowListeners.set(type, []);
       windowListeners.get(type).push(handler);
@@ -396,6 +416,7 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
     clearInterval: window.clearInterval,
     document,
     window,
+    innerHeight: Number(options.innerHeight) || 720,
     chrome: {
       runtime: {
         onMessage: { addListener() {} }
@@ -432,8 +453,7 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
 
   const graph = page.document.getElementById("cgpt-lb-branch-map-v152");
   assert.ok(graph, "branch graph should render");
-  assert.match(graph.textContent, /Question 1/);
-  assert.match(graph.textContent, /Question 2/);
+  assert.match(graph.textContent, /분기 없음/);
 
   const toggleEvent = createModifiedKeyEvent("b", page.body, { altKey: true });
   page.document.dispatchEvent(toggleEvent);
@@ -443,7 +463,7 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
   assert.doesNotMatch(graph.textContent, /Question 1/, "branch mini overlay hides prompt text");
   graph.click();
   assert.equal(graph.classList.contains("cgpt-lb-branch-mini"), false, "clicking the branch mini overlay reopens the panel");
-  assert.match(graph.textContent, /Question 1/, "expanded branch panel restores prompt text");
+  assert.match(graph.textContent, /분기 없음/, "expanded branch panel does not list every prompt without a branch");
 
   const event = createKeyEvent("Tab", page.composer);
   page.document.dispatchEvent(event);
@@ -459,6 +479,23 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
   page.body.children = page.body.children.filter((child) => !/too many requests/i.test(child.textContent));
   page.intervals.forEach((callback) => callback());
   assert.equal(page.sendButton.clickCount, 1, "queued prompt sends after reply and rate-limit block clear");
+
+  const manyTurns = Array.from({ length: 10 }, (_, index) => {
+    const turn = makeTurn(`view-${index}`, index % 2 === 0 ? "user" : "assistant", `Viewport message ${index}`);
+    if (index === 3) turn.rect = { top: 240, bottom: 330, width: 640, height: 90 };
+    return turn;
+  });
+  const viewportPage = await loadContent({
+    branchTrackerEnabled: false,
+    nextPromptQueueEnabled: false,
+    visibleTurns: 1
+  }, {}, {
+    turns: manyTurns,
+    innerHeight: 720
+  });
+  assert.equal(manyTurns[3].classList.contains("cgpt-lb-hidden"), false, "currently viewed message is not collapsed");
+  assert.equal(manyTurns[0].classList.contains("cgpt-lb-hidden"), true, "offscreen older message can still collapse");
+  assert.equal(manyTurns[9].classList.contains("cgpt-lb-hidden"), false, "newest message remains visible");
 
   const queuePage = await loadContent({
     branchTrackerEnabled: true,
@@ -491,6 +528,7 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
   assert.equal(queueToggle.defaultPrevented, true);
   assert.equal(queuePanel.hidden, false, "queue panel stays visible as a mini overlay");
   assert.equal(queuePanel.classList.contains("cgpt-lb-next-mini-panel"), true, "queue panel shortcut collapses to mini mode");
+  assert.match(queuePanel.textContent, /Queue 열어보기/, "queue mini overlay shows an open-queue label");
   queuePanel.click();
   assert.equal(queuePanel.classList.contains("cgpt-lb-next-mini-panel"), false, "clicking the queue mini overlay reopens the panel");
 
@@ -514,12 +552,14 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
           ]
         },
         {
-          ids: ["u1", "a1", "u2b", "a2b"],
+          ids: ["u1", "a1", "u2b", "a2b", "u3b", "a3b"],
           nodes: [
             { id: "u1", role: "user", index: 0, preview: "Question 1" },
             { id: "a1", role: "assistant", index: 1, preview: "Answer 1" },
             { id: "u2b", role: "user", index: 2, preview: "Alternative prompt" },
-            { id: "a2b", role: "assistant", index: 3, preview: "Alternative answer" }
+            { id: "a2b", role: "assistant", index: 3, preview: "Alternative answer" },
+            { id: "u3b", role: "user", index: 4, preview: "Nested edited branch prompt" },
+            { id: "a3b", role: "assistant", index: 5, preview: "Nested edited branch answer" }
           ]
         }
       ]
@@ -534,7 +574,54 @@ async function loadContent(storageData = {}, initialSessionValues = {}) {
     "cgptLongChatLoader.branchPaths.v1": JSON.stringify(branchState)
   });
   const branchedGraph = branchedPage.document.getElementById("cgpt-lb-branch-map-v152");
-  assert.match(branchedGraph.textContent, /Question 2/);
-  assert.match(branchedGraph.textContent, /Alternative prompt/);
   assert.match(branchedGraph.textContent, /분기 전: Question 1/);
+  assert.match(branchedGraph.textContent, /시작: Question 2 \/ Alternative prompt/);
+  assert.match(branchedGraph.textContent, /분기 전: Question 2/);
+  assert.match(branchedGraph.textContent, /시작: Nested edited branch prompt/);
+  assert.doesNotMatch(branchedGraph.textContent, /Alternative answer/);
+  assert.doesNotMatch(branchedGraph.textContent, /Nested edited branch answer/);
+  const firstBranchDetail = branchedGraph.querySelector(".cgpt-lb-branch-detail");
+  const currentBranchStart = branchedPage.document.querySelector('[data-message-id="u2"]');
+  firstBranchDetail.click();
+  assert.equal(currentBranchStart.scrollIntoViewCount, 1, "clicking a branch summary jumps to the visible branch prompt");
+  assert.equal(currentBranchStart.lastScrollIntoViewArg.block, "center");
+  assert.equal(currentBranchStart.lastScrollIntoViewArg.behavior, "smooth");
+
+  const summarizedPage = await loadContent({
+    branchTrackerEnabled: true,
+    branchTrackerShortcut: "Alt+B",
+    nextPromptQueueEnabled: true,
+    nextPromptQueueShortcut: "Tab"
+  }, {
+    "cgptLongChatLoader.branchPaths.v1": JSON.stringify({
+      "https://chatgpt.com/c/example": {
+        snapshots: [
+          {
+            ids: ["u1", "a1", "short-user-branch"],
+            nodes: [
+              { id: "u1", role: "user", index: 0, preview: "Question 1" },
+              { id: "a1", role: "assistant", index: 1, preview: "Answer 1" },
+              { id: "short-user-branch", role: "user", index: 2, preview: "Short branch prompt" }
+            ]
+          },
+          {
+            ids: ["u1", "a1", "long-user-branch"],
+            nodes: [
+              { id: "u1", role: "user", index: 0, preview: "Question 1" },
+              { id: "a1", role: "assistant", index: 1, preview: "Answer 1" },
+              {
+                id: "long-user-branch",
+                role: "user",
+                index: 2,
+                preview: "현재 코드를 추가적으로 개선하여 branch tree에서 사용자의 매우 긴 프롬프트 전문을 그대로 보여주지 말고 간략한 제목처럼 정리해서 보여줘. 추가 설명은 아주 길게 이어진다."
+              }
+            ]
+          }
+        ]
+      }
+    })
+  });
+  const summarizedGraph = summarizedPage.document.getElementById("cgpt-lb-branch-map-v152");
+  assert.match(summarizedGraph.textContent, /branch tree에서 사용자의 매우 긴 프롬프트/);
+  assert.doesNotMatch(summarizedGraph.textContent, /추가 설명은 아주 길게 이어진다/);
 })();

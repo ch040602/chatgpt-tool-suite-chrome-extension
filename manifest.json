@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT Long Chat Loader",
-  "description": "Reduce ChatGPT long-chat loading/RAM pressure, copy formulas to Word/PowerPoint, and check/download GitHub ZIP releases.",
+  "name": "ChatGPT Tool Suite",
+  "description": "A ChatGPT toolkit for long-chat loading, branch tracking, queued prompts, and Office-safe formula copy.",
   "version": "1.5.3",
   "minimum_chrome_version": "102",
   "permissions": [
@@ -18,7 +18,7 @@
     "https://github.com/*"
   ],
   "action": {
-    "default_title": "ChatGPT Long Chat Loader",
+    "default_title": "ChatGPT Tool Suite",
     "default_popup": "popup.html"
   },
   "icons": {

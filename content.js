@@ -850,17 +850,36 @@
     const rolePrefix = String(role || "").toLowerCase();
     if (rolePrefix && raw.toLowerCase().startsWith(rolePrefix)) raw = raw.slice(rolePrefix.length);
     raw = raw.replace(/\b(user|assistant|tool|system)\b/ig, " ");
-    const limit = role === "user" ? 54 : 38;
-    return compactText(raw, limit);
+    if (role === "user") return summarizePromptTitle(raw);
+    return compactText(raw, 38);
   }
 
   function compactBranchNode(node) {
+    const role = String(node && node.role || "message");
+    const preview = role === "user"
+      ? summarizePromptTitle(node && node.preview)
+      : compactText(node && node.preview, 64);
     return {
       id: String(node && node.id || ""),
-      role: String(node && node.role || "message"),
+      role,
       index: Number(node && node.index) || 0,
-      preview: compactText(node && node.preview, 64)
+      preview
     };
+  }
+
+  function summarizePromptTitle(value) {
+    let text = String(value || "")
+      .replace(/```[\s\S]*?```/g, " code ")
+      .replace(/`[^`]*`/g, " code ")
+      .replace(/https?:\/\/\S+/g, " link ")
+      .replace(/\s+/g, " ")
+      .trim();
+    text = text.replace(/^(please|can you|could you|would you|help me|내가|제가|혹시|제발)\s+/i, "");
+    const sentence = text.split(/(?<=[.!?。！？])\s+|[;\n\r]+/).map((part) => part.trim()).find(Boolean);
+    text = sentence || text;
+    const koreanAction = text.match(/(?:현재|해당|그리고|또한|이제)?\s*([^.!?\n\r]{4,42}?(?:해줘|하도록해|하게해|보여줘|만들어줘|수정|개선|추가|삭제|정리|반영))/);
+    if (koreanAction && koreanAction[1]) text = koreanAction[1];
+    return compactText(text, 34);
   }
 
   function readTurnId(turn, index, role) {
@@ -935,38 +954,22 @@
 
     const list = document.createElement("div");
     list.className = "cgpt-lb-branch-list";
-    for (const row of treeRows.slice(-18)) {
-      const node = row.node;
-      const item = document.createElement("div");
-      item.className = `cgpt-lb-branch-node cgpt-lb-branch-${node.role}${row.current ? " cgpt-lb-branch-current" : ""}`;
-      const summary = branchSummaries[node.index];
-      item.title = summary
-        ? `Branch point · before: ${summary.before || "-"} · start: ${summary.start || "-"}`
-        : `${node.role} · ${node.id}${node.preview ? ` · ${node.preview}` : ""}`;
-      item.style.setProperty("--cgpt-lb-branch-depth", String(Math.max(0, row.depth || 0)));
-
-      const rail = document.createElement("span");
-      rail.className = "cgpt-lb-branch-rail";
-      rail.textContent = row.branch ? "├" : branchCounts[node.index] > 1 ? "●" : "○";
-
-      const label = document.createElement("span");
-      label.className = "cgpt-lb-branch-label";
-      label.textContent = `${node.index + 1}. ${formatRoleLabel(node.role)} ${node.preview || String(node.id).slice(0, 10)}`;
-
-      const branches = document.createElement("span");
-      branches.className = "cgpt-lb-branch-count";
-      branches.textContent = row.branch ? "alt" : branchCounts[node.index] > 1 ? `x${branchCounts[node.index]}` : "";
-
-      item.append(rail, label, branches);
-      list.appendChild(item);
-
-      if (summary && row.current) {
-        const detail = document.createElement("div");
-        detail.className = "cgpt-lb-branch-detail";
-        detail.style.setProperty("--cgpt-lb-branch-depth", String(Math.max(0, row.depth || 0)));
-        detail.textContent = `분기 전: ${summary.before || "-"} · 시작: ${summary.start || "-"}`;
-        list.appendChild(detail);
-      }
+    const summaryRows = buildBranchSummaryRows(branchSummaries);
+    if (!summaryRows.length) {
+      const empty = document.createElement("div");
+      empty.className = "cgpt-lb-branch-detail";
+      empty.textContent = "분기 없음";
+      list.appendChild(empty);
+    }
+    for (const row of summaryRows) {
+      const detail = document.createElement("div");
+      detail.className = "cgpt-lb-branch-detail";
+      detail.dataset.targetIds = row.targetIds.join("\t");
+      detail.style.setProperty("--cgpt-lb-branch-depth", String(Math.max(0, row.depth || 0)));
+      detail.textContent = `분기 전: ${row.before || "-"} · 시작: ${row.start || "-"}`;
+      detail.title = "Click to jump to this conversation point";
+      detail.addEventListener("click", () => jumpToBranchTargets(row.targetIds));
+      list.appendChild(detail);
     }
     branchMapPanel.appendChild(list);
     applyBranchMapCollapsedState();
@@ -1029,48 +1032,89 @@
     const currentNodes = path.map(compactBranchNode);
     const rows = currentNodes.map((node) => ({ node, depth: 0, current: true, branch: false }));
     const inserted = new Set(currentNodes.map((node) => node.id));
-    const variants = collectSnapshotNodes(routeState).filter((nodes) => sharesPrefix(nodes, currentNodes));
+    const variants = collectSnapshotNodes(routeState)
+      .map((nodes) => nodes.map(compactBranchNode))
+      .filter((nodes) => connectedToCurrentPath(nodes, currentNodes));
 
-    for (const [index, count] of Object.entries(branchCounts)) {
-      const depth = Number(index);
-      if (!Number.isFinite(depth) || count < 2) continue;
-      const currentId = currentNodes[depth] && currentNodes[depth].id;
-      const alternatives = [];
-      for (const nodes of variants) {
-        const node = nodes[depth];
-        if (!node || node.id === currentId || inserted.has(node.id)) continue;
-        const start = findFirstUserPromptAtOrAfter(nodes, depth) || node.preview;
-        alternatives.push({
+    for (const nodes of variants) {
+      const divergenceIndex = findFirstDivergenceIndex(nodes, currentNodes);
+      if (divergenceIndex <= 0) continue;
+      let insertAt = findExistingRowInsertIndex(rows, nodes[divergenceIndex - 1].id);
+      for (let index = divergenceIndex; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        if (!node) continue;
+        if (inserted.has(node.id)) {
+          insertAt = findExistingRowInsertIndex(rows, node.id);
+          continue;
+        }
+        const start = node.role === "user" ? node.preview : findFirstUserPromptAtOrAfter(nodes, index) || node.preview;
+        rows.splice(insertAt, 0, {
           node: {
             ...node,
             preview: compactText(start || node.preview || node.id, 64)
           },
-          depth: depth + 1,
+          depth: Math.max(1, index),
           current: false,
           branch: true
         });
         inserted.add(node.id);
-      }
-      if (!alternatives.length) continue;
-      const insertAt = findRowInsertIndex(rows, depth);
-      rows.splice(insertAt, 0, ...alternatives);
-      const summary = branchSummaries[depth];
-      if (summary) {
-        rows.splice(insertAt + alternatives.length, 0, {
-          node: {
-            id: `branch-summary-${depth}`,
-            role: "message",
-            index: depth,
-            preview: `분기 전: ${summary.before || "-"} · 시작: ${summary.start || "-"}`
-          },
-          depth: depth + 1,
-          current: false,
-          branch: true,
-          summaryOnly: true
-        });
+        insertAt += 1;
       }
     }
-    return rows.filter((row) => row && row.node && !row.summaryOnly);
+
+    for (const [index, count] of Object.entries(branchCounts)) {
+      const depth = Number(index);
+      const summary = branchSummaries[depth];
+      if (!Number.isFinite(depth) || count < 2 || !summary) continue;
+      const insertAt = findRowInsertIndex(rows, depth);
+      rows.splice(insertAt, 0, {
+        node: {
+          id: `branch-summary-${depth}`,
+          role: "message",
+          index: depth,
+          preview: `분기 전: ${summary.before || "-"} · 시작: ${summary.start || "-"}`
+        },
+        depth: depth + 1,
+        current: false,
+        branch: true,
+        summaryOnly: true
+      });
+    }
+    return rows.filter((row) => row && row.node);
+  }
+
+  function buildBranchSummaryRows(branchSummaries) {
+    return Object.entries(branchSummaries || {})
+      .map(([index, summary]) => ({
+        depth: Number(index) + 1,
+        before: summary && summary.before,
+        start: summary && summary.start,
+        targetIds: Array.isArray(summary && summary.targetIds) ? summary.targetIds : []
+      }))
+      .filter((row) => row.before || row.start)
+      .sort((a, b) => a.depth - b.depth);
+  }
+
+  function connectedToCurrentPath(left, right) {
+    if (arraysEqual(left.map((node) => node.id), right.map((node) => node.id))) return false;
+    return sharedPrefixLength(left, right) > 0;
+  }
+
+  function sharedPrefixLength(left, right) {
+    if (!left.length || !right.length) return 0;
+    const limit = Math.min(left.length, right.length);
+    for (let i = 0; i < limit; i += 1) {
+      if (!left[i] || !right[i] || left[i].id !== right[i].id) return i;
+    }
+    return limit;
+  }
+
+  function findFirstDivergenceIndex(left, right) {
+    const shared = sharedPrefixLength(left, right);
+    if (!shared) return -1;
+    if (shared < Math.min(left.length, right.length)) return shared;
+    if (left.length > right.length) return shared;
+    return -1;
   }
 
   function collectSnapshotNodes(routeState) {
@@ -1086,20 +1130,20 @@
     return rows;
   }
 
-  function sharesPrefix(left, right) {
-    if (!left.length || !right.length) return false;
-    const limit = Math.min(left.length, right.length);
-    for (let i = 0; i < limit; i += 1) {
-      if (!left[i] || !right[i] || left[i].id !== right[i].id) return i > 0;
-    }
-    return true;
-  }
-
   function findRowInsertIndex(rows, depth) {
     let index = rows.findIndex((row) => row.node && row.node.index === depth);
     if (index < 0) return rows.length;
     index += 1;
     while (index < rows.length && rows[index].depth > 0 && rows[index].node.index <= depth) index += 1;
+    return index;
+  }
+
+  function findExistingRowInsertIndex(rows, nodeId) {
+    let index = rows.findIndex((row) => row.node && row.node.id === nodeId);
+    if (index < 0) return rows.length;
+    const baseDepth = Number(rows[index].depth) || 0;
+    index += 1;
+    while (index < rows.length && Number(rows[index].depth) > baseDepth) index += 1;
     return index;
   }
 
@@ -1122,30 +1166,97 @@
     for (const [index, variants] of byIndex) {
       if (variants.size < 2) continue;
       const starts = [];
+      const targetIds = [];
       for (const nodes of variants.values()) {
-        const start = findFirstUserPromptAtOrAfter(nodes, index);
-        if (start) starts.push(start);
+        const startNode = findFirstUserPromptNodeAtOrAfter(nodes, index);
+        if (startNode && startNode.preview) starts.push(startNode.preview);
+        if (startNode && startNode.id) targetIds.push(startNode.id);
       }
+      const beforeNode = findPreviousUserPromptNode(currentNodes, index - 1);
+      if (beforeNode && beforeNode.id) targetIds.push(beforeNode.id);
       summaries[index] = {
-        before: findPreviousUserPrompt(currentNodes, index - 1),
-        start: compactText(uniqueStrings(starts).join(" / "), 80)
+        before: beforeNode && beforeNode.preview || "",
+        start: compactText(uniqueStrings(starts).join(" / "), 80),
+        targetIds: uniqueStrings(targetIds)
       };
     }
     return summaries;
   }
 
-  function findPreviousUserPrompt(nodes, startIndex) {
+  function findPreviousUserPromptNode(nodes, startIndex) {
     for (let i = Math.min(startIndex, nodes.length - 1); i >= 0; i -= 1) {
-      if (nodes[i] && nodes[i].role === "user" && nodes[i].preview) return nodes[i].preview;
+      if (nodes[i] && nodes[i].role === "user" && nodes[i].preview) return nodes[i];
     }
-    return "";
+    return null;
+  }
+
+  function findPreviousUserPrompt(nodes, startIndex) {
+    const node = findPreviousUserPromptNode(nodes, startIndex);
+    return node && node.preview || "";
+  }
+
+  function findFirstUserPromptNodeAtOrAfter(nodes, startIndex) {
+    for (let i = Math.max(0, startIndex); i < nodes.length; i += 1) {
+      if (nodes[i] && nodes[i].role === "user" && nodes[i].preview) return nodes[i];
+    }
+    return null;
   }
 
   function findFirstUserPromptAtOrAfter(nodes, startIndex) {
-    for (let i = Math.max(0, startIndex); i < nodes.length; i += 1) {
-      if (nodes[i] && nodes[i].role === "user" && nodes[i].preview) return nodes[i].preview;
+    const node = findFirstUserPromptNodeAtOrAfter(nodes, startIndex);
+    return node && node.preview || "";
+  }
+
+  function jumpToBranchTargets(targetIds) {
+    const ids = Array.isArray(targetIds) ? targetIds : [];
+    for (const id of ids) {
+      const target = findTurnElementByBranchId(id);
+      if (!target) continue;
+      showElement(target);
+      removeContainment(target);
+      try {
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+      } catch {
+        try {
+          target.scrollIntoView();
+        } catch {
+          // Non-critical navigation failure.
+        }
+      }
+      target.setAttribute("data-cgpt-lb-branch-jump", "true");
+      setTimeout(() => {
+        try {
+          target.removeAttribute("data-cgpt-lb-branch-jump");
+        } catch {
+          // Non-critical highlight cleanup.
+        }
+      }, 1600);
+      return true;
     }
-    return "";
+    showNextPromptToast("Branch target is not visible in this session.");
+    return false;
+  }
+
+  function findTurnElementByBranchId(id) {
+    const targetId = String(id || "");
+    if (!targetId) return null;
+    const scope = getMessageScope() || document.body || document.documentElement;
+    const escaped = cssStringEscape(targetId);
+    const direct = safeQueryAll(`[data-message-id="${escaped}"], [data-turn-id="${escaped}"], [data-testid="${escaped}"]`, scope)[0];
+    if (direct) return resolveTurnFromMessageIdNode(direct, scope) || normalizeTurnElement(direct, scope);
+
+    const turns = queryMessageTurns().slice(-80);
+    for (const turn of turns) {
+      if (readTurnId(turn, Number(turn.dataset && turn.dataset.cgptLbIndex) || 0, getTurnRole(turn)) === targetId) return turn;
+      if (turn.getAttribute("data-message-id") === targetId || turn.getAttribute("data-turn-id") === targetId || turn.getAttribute("data-testid") === targetId) return turn;
+      const nested = turn.querySelector && turn.querySelector("[data-message-id], [data-turn-id]");
+      if (nested && (nested.getAttribute("data-message-id") === targetId || nested.getAttribute("data-turn-id") === targetId)) return turn;
+    }
+    return null;
+  }
+
+  function cssStringEscape(value) {
+    return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
 
   function uniqueStrings(values) {
@@ -1493,6 +1604,9 @@
     const mini = document.createElement("div");
     mini.className = "cgpt-lb-next-mini";
     mini.setAttribute("aria-label", "Open queued prompts");
+    const openLabel = document.createElement("span");
+    openLabel.className = "cgpt-lb-next-mini-open";
+    openLabel.textContent = "Queue 열어보기";
     const countText = document.createElement("span");
     countText.className = "cgpt-lb-next-mini-count";
     countText.textContent = `Queue ${count || 0}`;
@@ -1504,7 +1618,10 @@
       bar.textContent = "";
       bars.appendChild(bar);
     }
-    mini.append(countText, bars);
+    const graph = document.createElement("span");
+    graph.className = "cgpt-lb-next-mini-graph";
+    graph.append(countText, bars);
+    mini.append(openLabel, graph);
     panel.appendChild(mini);
   }
 
@@ -2448,7 +2565,31 @@
       if (hasStreamingMarker(turns[i])) protectedIndexes.add(i);
     }
 
+    addViewportProtectedIndexes(turns, protectedIndexes);
     return protectedIndexes;
+  }
+
+  function addViewportProtectedIndexes(turns, protectedIndexes) {
+    const viewportHeight = Number(window.innerHeight) || Number(document.documentElement && document.documentElement.clientHeight) || 0;
+    if (!viewportHeight) return;
+    const margin = Math.min(220, Math.max(80, Math.round(viewportHeight * 0.18)));
+    turns.forEach((turn, index) => {
+      if (!isTurnInViewport(turn, viewportHeight, margin)) return;
+      protectedIndexes.add(index);
+      if (index > 0) protectedIndexes.add(index - 1);
+      if (index + 1 < turns.length) protectedIndexes.add(index + 1);
+    });
+  }
+
+  function isTurnInViewport(turn, viewportHeight, margin) {
+    if (!(turn instanceof HTMLElement) || typeof turn.getBoundingClientRect !== "function") return false;
+    try {
+      const rect = turn.getBoundingClientRect();
+      if (!rect || rect.width === 0 && rect.height === 0) return false;
+      return rect.bottom >= -margin && rect.top <= viewportHeight + margin;
+    } catch {
+      return false;
+    }
   }
 
   function computeVisibleWindowIndexes(total, requestedVisible, protectedIndexes) {
@@ -2599,8 +2740,10 @@
       #${NEXT_PROMPT_TOAST_ID}{position:fixed;right:14px;bottom:54px;z-index:2147483001;padding:7px 10px;border-radius:10px;background:color-mix(in srgb, CanvasText 84%, Canvas 16%);color:Canvas;font:12px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.20);contain:layout paint style;pointer-events:none;max-width:320px;}
       #${NEXT_PROMPT_TOGGLE_BUTTON_ID}{position:fixed;left:14px;top:54px;z-index:2147483000;padding:6px 9px;border:1px solid rgba(128,128,128,.34);border-radius:999px;background:color-mix(in srgb, Canvas 92%, CanvasText 8%);color:CanvasText;font:11px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.14);cursor:pointer;contain:layout paint style;}
       #${NEXT_PROMPT_PANEL_ID}{position:fixed;left:14px;top:88px;z-index:2147482999;width:300px;max-height:min(56vh,520px);overflow:auto;padding:9px;border:1px solid rgba(128,128,128,.34);border-radius:8px;background:color-mix(in srgb, Canvas 93%, CanvasText 7%);color:CanvasText;font:11px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.16);contain:layout paint style;}
-      #${NEXT_PROMPT_PANEL_ID}.cgpt-lb-next-mini-panel{width:auto;min-width:82px;max-width:118px;min-height:28px;overflow:hidden;padding:7px 9px;border-radius:999px;cursor:pointer;}
-      #${NEXT_PROMPT_PANEL_ID} .cgpt-lb-next-mini{display:flex;align-items:center;gap:7px;white-space:nowrap;}
+      #${NEXT_PROMPT_PANEL_ID}.cgpt-lb-next-mini-panel{width:auto;min-width:96px;max-width:138px;min-height:44px;overflow:hidden;padding:7px 9px;border-radius:10px;cursor:pointer;}
+      #${NEXT_PROMPT_PANEL_ID} .cgpt-lb-next-mini{display:grid;gap:4px;white-space:nowrap;}
+      #${NEXT_PROMPT_PANEL_ID} .cgpt-lb-next-mini-open{font-weight:700;font-size:11px;line-height:1.15;text-align:center;}
+      #${NEXT_PROMPT_PANEL_ID} .cgpt-lb-next-mini-graph{display:flex;align-items:center;justify-content:center;gap:7px;}
       #${NEXT_PROMPT_PANEL_ID} .cgpt-lb-next-mini-count{font-weight:700;font-size:11px;line-height:1;}
       #${NEXT_PROMPT_PANEL_ID} .cgpt-lb-next-mini-bars{display:grid;grid-auto-flow:column;gap:2px;align-items:end;height:12px;}
       #${NEXT_PROMPT_PANEL_ID} .cgpt-lb-next-mini-bars span{display:block;width:3px;height:8px;border-radius:2px;background:color-mix(in srgb, CanvasText 64%, Canvas 36%);}
@@ -2628,7 +2771,8 @@
       #${BRANCH_MAP_ID} .cgpt-lb-branch-rail{font-size:12px;text-align:center;color:color-mix(in srgb, CanvasText 70%, Canvas 30%);}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-count{text-align:right;color:color-mix(in srgb, CanvasText 62%, Canvas 38%);}
-      #${BRANCH_MAP_ID} .cgpt-lb-branch-detail{margin:0 0 4px calc(20px + var(--cgpt-lb-branch-depth,0) * 12px);padding:4px 6px;border-left:2px solid color-mix(in srgb, CanvasText 32%, Canvas 68%);color:color-mix(in srgb, CanvasText 78%, Canvas 22%);background:color-mix(in srgb, Canvas 86%, CanvasText 14%);border-radius:6px;overflow-wrap:anywhere;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-detail{margin:0 0 4px calc(20px + var(--cgpt-lb-branch-depth,0) * 12px);padding:4px 6px;border-left:2px solid color-mix(in srgb, CanvasText 32%, Canvas 68%);color:color-mix(in srgb, CanvasText 78%, Canvas 22%);background:color-mix(in srgb, Canvas 86%, CanvasText 14%);border-radius:6px;overflow-wrap:anywhere;cursor:pointer;}
+      [data-cgpt-lb-branch-jump="true"]{outline:2px solid #3b82f6!important;outline-offset:4px!important;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-user .cgpt-lb-branch-rail{color:#3b82f6;}
       #${BRANCH_MAP_ID} .cgpt-lb-branch-assistant .cgpt-lb-branch-rail{color:#16a34a;}
       @supports (content-visibility:auto){.${CONTAINED_CLASS}:not(.${HIDDEN_CLASS}){content-visibility:auto;contain-intrinsic-size:auto 720px;}}
@@ -3539,7 +3683,7 @@
   function debug(...args) {
     if (!settings.debug) return;
     try {
-      console.debug("[ChatGPT Long Chat Loader]", ...args);
+      console.debug("[ChatGPT Tool Suite]", ...args);
     } catch {
       // Ignore console failures.
     }

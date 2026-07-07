@@ -29,7 +29,7 @@ Chrome does not provide an extension API that lets an unpacked extension overwri
 Upload a release asset named like:
 
 ```text
-chatgpt-long-chat-loader-v1.5.3.zip
+chatgpt-tool-suite-chrome-extension-v1.5.3.zip
 ```
 
 The popup prefers ZIP release assets. If no release asset exists, it can fall back to the repository source ZIP.
