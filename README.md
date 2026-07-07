@@ -4,11 +4,11 @@ Chrome MV3 extension for reducing long ChatGPT conversation loading/RAM pressure
 
 - Default documentation: English
 - Korean documentation: [`README.ko.md`](./README.ko.md)
-- Version: `1.5.2`
+- Version: `1.5.3`
 
-## v1.5.2 focus
+## v1.5.3 focus
 
-v1.5.2 is based on the cleaned v1.5.0 GitHub-release UI and fixes the Office formula duplicate-paste path while preserving the Office/LaTeX math representation.
+v1.5.3 adds visible ChatGPT branch-path tracking and a next-prompt queue while preserving the v1.5.2 long-chat and Office formula fixes.
 
 Main changes:
 
@@ -20,6 +20,8 @@ Main changes:
 - Keep GitHub repository information internal; it is not shown as an editable popup field.
 - Add clearer copyright, license, third-party notice, and release-upload guidance.
 - Prevent duplicate PowerPoint pastes by writing only one Office-facing math clipboard format at a time.
+- Show a compact branch-path panel for the currently visible ChatGPT conversation route.
+- Queue the next prompt with `Tab` by default, or with a user-configured popup shortcut, then send it after the current response and request-limit notices clear.
 
 ## Features
 
@@ -43,6 +45,12 @@ When selected ChatGPT content contains rendered math, the extension can correct 
 - The extension no longer writes HTML/MathML and plain text together, because that can produce duplicate PowerPoint pastes.
 
 For PowerPoint slides where the final visual result must be correct, use the floating formula-copy button first, or wait for the Ctrl/Cmd+C toast to report PNG copy completion before pasting.
+
+### Branch path and next prompt queue
+
+When **Show branch path** is enabled, the ChatGPT tab shows a compact path panel for the current visible conversation branch. The panel records the visible message IDs in `sessionStorage` for the current tab and marks positions where another ID was seen at the same depth, similar to a lightweight branch graph.
+
+When **Queue next prompt** is enabled, type the next prompt while ChatGPT is answering and press the configured shortcut. The default is `Tab`. The extension waits until the live response indicators disappear, then checks for request-limit text such as `Too many requests` or `rate limit`. If that notice is visible, the queued prompt remains pending and is sent only after the notice clears.
 
 ## Popup layout
 
@@ -80,7 +88,7 @@ For developer-mode/unpacked installs, Chrome cannot replace the local extension 
 5. Click **Load unpacked**.
 6. Select the extracted extension folder.
 7. Refresh existing ChatGPT tabs.
-8. Open the popup and confirm `API patch: MAIN 1.5.2`.
+8. Open the popup and confirm `API patch: MAIN 1.5.3`.
 
 ## Recommended settings
 
@@ -96,13 +104,16 @@ For developer-mode/unpacked installs, Chrome cannot replace the local extension 
 | Cache item limit | 256 KB |
 | Auto cleanup during chat | on |
 | Periodically collapse loaded older messages | on |
+| Show branch path | on |
+| Queue next prompt | on |
+| Queue shortcut | `Tab` |
 | Status badge | off |
 
 ## If trimming does not happen
 
 Open the popup and check:
 
-- `API patch`: should be `MAIN 1.5.2`.
+- `API patch`: should be `MAIN 1.5.3`.
 - `Patch status`: should include `MAIN detected`.
 - DOM hidden count should be greater than zero in a long conversation.
 - `Thinking shield` should return to idle after the answer completes.
@@ -143,7 +154,7 @@ This package is an original implementation. It was inspired by public approaches
 
 Before uploading a release:
 
-1. Confirm `manifest.json` version is `1.5.2`.
+1. Confirm `manifest.json` version is `1.5.3`.
 2. Confirm popup update UI shows only **Check update** and **Download latest ZIP**.
 3. Confirm both README files are present.
 4. Confirm `LICENSE` and `THIRD_PARTY_NOTICES.md` are included.

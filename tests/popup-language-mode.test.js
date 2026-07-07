@@ -10,7 +10,7 @@ function createElement(id) {
   const listeners = {};
   return {
     id,
-    type: id === "uiLanguage" ? "select" : id.endsWith("Enabled") || id === "enabled" || id === "showStatus" || id === "debug" ? "checkbox" : "button",
+    type: id === "languageMode" ? "select" : id.endsWith("Enabled") || id === "enabled" || id === "showStatus" || id === "debug" ? "checkbox" : "button",
     value: "",
     checked: false,
     textContent: "",
@@ -99,9 +99,9 @@ async function loadPopup(storageData = {}) {
   const koPopup = await loadPopup({ "cgptLongChatLoader.uiLanguage": "ko" });
 
   assert.equal(koPopup.document.documentElement.lang, "ko");
-  assert.equal(koPopup.elements.get("uiLanguage").value, "ko");
+  assert.equal(koPopup.elements.get("languageMode").value, "ko");
   assert.equal(koPopup.elements.get("enabledLabel").textContent, "확장 기능 사용");
-  assert.equal(koPopup.elements.get("openReadme").textContent, "README 열기");
+  assert.equal(koPopup.elements.get("openReadme").textContent, "Open README");
 
   koPopup.elements.get("openReadme").click();
   assert.equal(
@@ -112,15 +112,15 @@ async function loadPopup(storageData = {}) {
   const enPopup = await loadPopup({ "cgptLongChatLoader.uiLanguage": "en" });
 
   assert.equal(enPopup.document.documentElement.lang, "en");
-  assert.equal(enPopup.elements.get("uiLanguage").value, "en");
+  assert.equal(enPopup.elements.get("languageMode").value, "en");
   assert.equal(enPopup.elements.get("enabledLabel").textContent, "Enable extension");
   assert.equal(enPopup.elements.get("openReadme").textContent, "Open README");
 
-  const language = enPopup.elements.get("uiLanguage");
+  const language = enPopup.elements.get("languageMode");
   language.value = "ko";
   await language.change();
 
-  assert.equal(enPopup.storageData["cgptLongChatLoader.uiLanguage"], "ko");
+  assert.equal(enPopup.storageData.languageMode, "ko");
   assert.equal(enPopup.document.documentElement.lang, "ko");
   assert.equal(enPopup.elements.get("enabledLabel").textContent, "확장 기능 사용");
 })();

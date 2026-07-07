@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.5.2";
-  const CONTENT_BOOT_FLAG = "__CGPT_LONG_CHAT_LOADER_CONTENT_ACTIVE_V152__";
+  const CONTENT_VERSION = "1.5.3";
+  const CONTENT_BOOT_FLAG = "__CGPT_LONG_CHAT_LOADER_CONTENT_ACTIVE_V153__";
   if (window[CONTENT_BOOT_FLAG]) {
     try {
       window.dispatchEvent(new CustomEvent("cgpt-lb-force-scan", { detail: CONTENT_VERSION }));
@@ -41,13 +41,19 @@
   const STATUS_ID = "cgpt-lb-status";
   const MATH_COPY_BUTTON_ID = "cgpt-lb-math-copy-v152";
   const MATH_COPY_TOAST_ID = "cgpt-lb-math-copy-toast-v152";
+  const BRANCH_MAP_ID = "cgpt-lb-branch-map-v152";
+  const NEXT_PROMPT_TOAST_ID = "cgpt-lb-next-prompt-toast-v152";
   const RUNTIME_STYLE_ID = "cgpt-lb-runtime-style-v152";
   const TRIM_MARKER_KEY = "cgptLongChatLoader.trimMarkers.v1";
   const DEBUG_LOG_KEY = "cgptLongChatLoader.debugLog.v1";
+  const BRANCH_PATH_KEY = "cgptLongChatLoader.branchPaths.v1";
+  const NEXT_PROMPT_QUEUE_KEY = "cgptLongChatLoader.nextPromptQueue.v1";
   const TRIM_MARKER_TTL_MS = 6 * 60 * 60 * 1000;
   const MAX_TRIM_MARKERS = 20;
   const MAX_DEBUG_LOG_ENTRIES = 500;
   const MAX_DEBUG_ARG_LENGTH = 2000;
+  const MAX_BRANCH_SNAPSHOTS = 24;
+  const NEXT_PROMPT_CHECK_INTERVAL_MS = 1500;
   const ACTIVE_REPLY_PROTECTION_MS = 8 * 60 * 1000;
   const THINKING_PROTECTION_MS = 15 * 60 * 1000;
   const ACTIVE_REPLY_IDLE_GRACE_MS = 60 * 1000;
@@ -111,6 +117,9 @@
     mathCopyAutoOnCopy: true,
     mathCopyShowSelectionButton: true,
     mathCopyPreferPngFallback: true,
+    branchTrackerEnabled: true,
+    nextPromptQueueEnabled: true,
+    nextPromptQueueShortcut: "Tab",
     showStatus: false,
     debug: false
   });
@@ -150,6 +159,10 @@
   let mathCopyToast = null;
   let mathSelectionTimer = 0;
   let lastMathSelectionInfo = null;
+  let branchMapPanel = null;
+  let nextPromptToast = null;
+  let nextPromptQueueTimer = 0;
+  let nextPromptQueueState = readNextPromptQueueState();
 
   boot();
 
@@ -164,6 +177,7 @@
     listenForDebugLogEvents();
     listenForComposerActivity();
     listenForMathCopyEvents();
+    startNextPromptQueueLoop();
     startNavigationWatcher();
     startMaintenanceLoop();
     window.addEventListener("cgpt-lb-force-scan", () => scheduleScan(true));
@@ -225,6 +239,9 @@
       mathCopyAutoOnCopy: merged.mathCopyAutoOnCopy === false ? false : true,
       mathCopyShowSelectionButton: merged.mathCopyShowSelectionButton === false ? false : true,
       mathCopyPreferPngFallback: merged.mathCopyPreferPngFallback === false ? false : true,
+      branchTrackerEnabled: merged.branchTrackerEnabled === false ? false : true,
+      nextPromptQueueEnabled: merged.nextPromptQueueEnabled === false ? false : true,
+      nextPromptQueueShortcut: normalizeShortcut(merged.nextPromptQueueShortcut || DEFAULT_SETTINGS.nextPromptQueueShortcut),
       showStatus: Boolean(merged.showStatus),
       debug: Boolean(merged.debug)
     };
@@ -308,6 +325,8 @@
       restartMaintenanceLoop();
       if (!settings.mathCopyEnabled || !settings.mathCopyShowSelectionButton) hideMathCopyButton();
       else scheduleMathSelectionCheck();
+      if (!settings.branchTrackerEnabled) removeBranchMapPanel();
+      if (!settings.nextPromptQueueEnabled) clearNextPromptQueue("disabled");
       scanAndApply();
     });
   }
@@ -377,13 +396,31 @@
     }, { passive: true, capture: true });
 
     document.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
       const target = event.target instanceof Element ? event.target : null;
       if (!target || !target.closest) return;
-      if (target.closest("textarea, [contenteditable='true'], [role='textbox']")) {
+      const composer = findComposerFromTarget(target);
+      if (!composer) return;
+
+      if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
         markActiveReply("composer-enter", ACTIVE_REPLY_PROTECTION_MS);
       }
-    }, { passive: true, capture: true });
+
+      if (settings.nextPromptQueueEnabled && eventMatchesShortcut(event, settings.nextPromptQueueShortcut)) {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        queueNextPromptFromComposer(composer, "shortcut");
+      }
+    }, { capture: true });
+  }
+
+  function startNextPromptQueueLoop() {
+    if (nextPromptQueueTimer) return;
+    nextPromptQueueTimer = window.setInterval(() => processNextPromptQueue("interval"), NEXT_PROMPT_CHECK_INTERVAL_MS);
+  }
+
+  function stopNextPromptQueueLoop() {
+    if (nextPromptQueueTimer) clearInterval(nextPromptQueueTimer);
+    nextPromptQueueTimer = 0;
   }
 
   function startNavigationWatcher() {
@@ -682,6 +719,425 @@
     consumeApiTrimSignal();
     const turns = queryMessageTurns();
     applyVisibility(turns);
+    updateBranchPathTracker(turns);
+    processNextPromptQueue("scan");
+  }
+
+  function updateBranchPathTracker(turns) {
+    if (!settings.branchTrackerEnabled || !isLikelyChatSurface()) {
+      removeBranchMapPanel();
+      return;
+    }
+
+    const path = buildBranchPath(turns);
+    if (!path.length) {
+      removeBranchMapPanel();
+      return;
+    }
+
+    const state = readBranchPathState();
+    const routeKey = currentRouteKey();
+    const routeState = state[routeKey] && typeof state[routeKey] === "object"
+      ? state[routeKey]
+      : { snapshots: [] };
+    const ids = path.map((node) => node.id);
+    const last = Array.isArray(routeState.snapshots) ? routeState.snapshots[routeState.snapshots.length - 1] : null;
+    if (!last || !arraysEqual(last.ids, ids)) {
+      routeState.snapshots = (Array.isArray(routeState.snapshots) ? routeState.snapshots : [])
+        .concat({ ids, at: Date.now() })
+        .slice(-MAX_BRANCH_SNAPSHOTS);
+    }
+    routeState.current = ids;
+    routeState.updatedAt = Date.now();
+    state[routeKey] = routeState;
+    writeBranchPathState(state);
+    renderBranchMap(path, routeState);
+  }
+
+  function buildBranchPath(turns) {
+    return (Array.isArray(turns) ? turns : []).map((turn, index) => {
+      const role = normalizeRole(getTurnRole(turn)) || "message";
+      const messageId = readTurnId(turn, index, role);
+      return {
+        id: messageId,
+        role,
+        index,
+        preview: compactText(turn && turn.textContent, 42)
+      };
+    }).filter((node) => node.id);
+  }
+
+  function readTurnId(turn, index, role) {
+    if (!(turn instanceof HTMLElement)) return `${role}-${index}`;
+    const direct = [
+      turn.getAttribute("data-message-id"),
+      turn.getAttribute("data-turn-id"),
+      turn.getAttribute("data-testid")
+    ].find(Boolean);
+    if (direct) return String(direct);
+    const nested = turn.querySelector && turn.querySelector("[data-message-id], [data-turn-id]");
+    const nestedId = nested && (nested.getAttribute("data-message-id") || nested.getAttribute("data-turn-id"));
+    if (nestedId) return String(nestedId);
+    return `${role}-${index}-${hashString(compactText(turn.textContent, 80))}`;
+  }
+
+  function normalizeRole(role) {
+    const value = String(role || "").toLowerCase();
+    if (value.includes("user")) return "user";
+    if (value.includes("assistant")) return "assistant";
+    if (value.includes("tool")) return "tool";
+    if (value.includes("system")) return "system";
+    return value || "message";
+  }
+
+  function renderBranchMap(path, routeState) {
+    ensureRuntimeStyle();
+    if (!document.body) return;
+    if (!branchMapPanel || !document.documentElement.contains(branchMapPanel)) {
+      branchMapPanel = document.createElement("aside");
+      branchMapPanel.id = BRANCH_MAP_ID;
+      branchMapPanel.dataset.cgptLbUi = "true";
+      branchMapPanel.setAttribute("aria-label", "ChatGPT branch path");
+      document.body.appendChild(branchMapPanel);
+    }
+
+    const branchCounts = countBranchAlternates(routeState);
+    branchMapPanel.textContent = "";
+
+    const title = document.createElement("div");
+    title.className = "cgpt-lb-branch-title";
+    title.textContent = "Branch path";
+    branchMapPanel.appendChild(title);
+
+    const list = document.createElement("div");
+    list.className = "cgpt-lb-branch-list";
+    for (const node of path.slice(-12)) {
+      const item = document.createElement("div");
+      item.className = `cgpt-lb-branch-node cgpt-lb-branch-${node.role}`;
+      item.title = `${node.role} · ${node.id}${node.preview ? ` · ${node.preview}` : ""}`;
+
+      const rail = document.createElement("span");
+      rail.className = "cgpt-lb-branch-rail";
+      rail.textContent = branchCounts[node.index] > 1 ? "●" : "○";
+
+      const label = document.createElement("span");
+      label.className = "cgpt-lb-branch-label";
+      const shortId = String(node.id).slice(0, 10);
+      label.textContent = `${node.index + 1}. ${node.role[0] || "m"}:${shortId}`;
+
+      const branches = document.createElement("span");
+      branches.className = "cgpt-lb-branch-count";
+      branches.textContent = branchCounts[node.index] > 1 ? `x${branchCounts[node.index]}` : "";
+
+      item.append(rail, label, branches);
+      list.appendChild(item);
+    }
+    branchMapPanel.appendChild(list);
+  }
+
+  function removeBranchMapPanel() {
+    if (branchMapPanel && branchMapPanel.parentElement) branchMapPanel.remove();
+    branchMapPanel = null;
+  }
+
+  function countBranchAlternates(routeState) {
+    const counts = {};
+    const byIndex = new Map();
+    const snapshots = routeState && Array.isArray(routeState.snapshots) ? routeState.snapshots : [];
+    for (const snapshot of snapshots) {
+      const ids = Array.isArray(snapshot.ids) ? snapshot.ids : [];
+      ids.forEach((id, index) => {
+        if (!byIndex.has(index)) byIndex.set(index, new Set());
+        byIndex.get(index).add(id);
+      });
+    }
+    for (const [index, values] of byIndex) counts[index] = values.size;
+    return counts;
+  }
+
+  function readBranchPathState() {
+    try {
+      const raw = sessionStorage.getItem(BRANCH_PATH_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeBranchPathState(state) {
+    try {
+      sessionStorage.setItem(BRANCH_PATH_KEY, JSON.stringify(state || {}));
+    } catch {
+      // Branch tracking is best-effort and local to the current tab.
+    }
+  }
+
+  function queueNextPromptFromComposer(composer, source) {
+    const prompt = readComposerText(composer);
+    if (!prompt) {
+      showNextPromptToast("No prompt to queue.");
+      return false;
+    }
+    nextPromptQueueState = {
+      queued: true,
+      prompt,
+      routeKey: currentRouteKey(),
+      source: String(source || "shortcut"),
+      queuedAt: Date.now()
+    };
+    writeNextPromptQueueState(nextPromptQueueState);
+    showNextPromptToast(describeNextPromptQueueWait());
+    processNextPromptQueue("queue");
+    return true;
+  }
+
+  function processNextPromptQueue(reason) {
+    if (!settings.nextPromptQueueEnabled || !isLikelyChatSurface()) return;
+    const state = nextPromptQueueState && nextPromptQueueState.queued ? nextPromptQueueState : readNextPromptQueueState();
+    if (!state || !state.queued) return;
+    nextPromptQueueState = state;
+
+    const composer = findComposer();
+    if (!composer) {
+      showNextPromptToast("Next prompt queued · waiting for composer");
+      return;
+    }
+
+    const currentText = readComposerText(composer);
+    if (!currentText && state.prompt) writeComposerText(composer, state.prompt);
+
+    if (isReplyActiveInDom()) {
+      showNextPromptToast("Next prompt queued · waiting for response");
+      return;
+    }
+
+    if (hasRateLimitNotice()) {
+      showNextPromptToast("Next prompt queued · waiting for request limit");
+      return;
+    }
+
+    const prompt = readComposerText(composer);
+    if (!prompt) {
+      showNextPromptToast("Next prompt queued · waiting for text");
+      return;
+    }
+
+    const sendButton = findSendButton();
+    if (!sendButton) {
+      showNextPromptToast("Next prompt queued · waiting for send button");
+      return;
+    }
+
+    debug("queued prompt send", { reason, promptLength: prompt.length });
+    sendButton.click();
+    clearNextPromptQueue("sent");
+    markActiveReply("queued-next-prompt-send", ACTIVE_REPLY_PROTECTION_MS);
+    showNextPromptToast("Queued prompt sent.");
+  }
+
+  function isReplyActiveInDom() {
+    if (findStopControl(getMessageScope())) return true;
+    return Boolean(detectActiveReplyNow(queryMessageTurns()).active);
+  }
+
+  function findComposerFromTarget(target) {
+    if (!(target instanceof Element) || !target.closest) return null;
+    const composer = target.closest("textarea, [contenteditable='true'], [role='textbox']");
+    return composer instanceof HTMLElement ? composer : null;
+  }
+
+  function findComposer() {
+    return safeQueryAll("textarea, [contenteditable='true'], [role='textbox']", document.body || document.documentElement)
+      .filter((el) => !isExtensionUi(el))
+      .find((el) => !el.disabled && el.getAttribute("aria-disabled") !== "true") || null;
+  }
+
+  function readComposerText(composer) {
+    if (!(composer instanceof HTMLElement)) return "";
+    if ("value" in composer && typeof composer.value === "string") return composer.value.trim();
+    return String(composer.textContent || "").trim();
+  }
+
+  function writeComposerText(composer, text) {
+    if (!(composer instanceof HTMLElement)) return;
+    const value = String(text || "");
+    composer.focus();
+    if ("value" in composer && typeof composer.value === "string") composer.value = value;
+    else composer.textContent = value;
+    try {
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
+    } catch {
+      // Non-critical input notification failure.
+    }
+  }
+
+  function findSendButton() {
+    const buttons = safeQueryAll("button", document.body || document.documentElement);
+    return buttons.find((button) => {
+      if (isExtensionUi(button) || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+      const testId = String(button.getAttribute("data-testid") || "").toLowerCase();
+      const label = String(button.getAttribute("aria-label") || button.textContent || "").toLowerCase();
+      if (testId.includes("stop") || label.includes("stop") || label.includes("중지")) return false;
+      return testId.includes("send") || label.includes("send") || label.includes("전송") || label.includes("보내");
+    }) || null;
+  }
+
+  function hasRateLimitNotice() {
+    const text = collectNonExtensionText(document.body || document.documentElement).toLowerCase();
+    return /too many requests|rate limit|request limit|try again later|temporarily unavailable|잠시 후|너무 많은 요청|요청이 너무 많|속도 제한/.test(text);
+  }
+
+  function collectNonExtensionText(root) {
+    if (!(root instanceof Element)) return "";
+    const parts = [];
+    const visit = (node) => {
+      if (!(node instanceof Element) || isExtensionUi(node)) return;
+      const own = Array.from(node.childNodes || [])
+        .filter((child) => !(child instanceof Element))
+        .map((child) => child.textContent || "")
+        .join(" ");
+      if (own) parts.push(own);
+      for (const child of Array.from(node.children || [])) visit(child);
+    };
+    visit(root);
+    return parts.join(" ") || String(root.textContent || "");
+  }
+
+  function describeNextPromptQueueWait() {
+    if (isReplyActiveInDom()) return "Next prompt queued · waiting for response";
+    if (hasRateLimitNotice()) return "Next prompt queued · waiting for request limit";
+    return "Next prompt queued";
+  }
+
+  function showNextPromptToast(message) {
+    ensureRuntimeStyle();
+    if (!document.body) return;
+    if (!nextPromptToast || !document.documentElement.contains(nextPromptToast)) {
+      nextPromptToast = document.createElement("div");
+      nextPromptToast.id = NEXT_PROMPT_TOAST_ID;
+      nextPromptToast.dataset.cgptLbUi = "true";
+      nextPromptToast.setAttribute("role", "status");
+      nextPromptToast.setAttribute("aria-live", "polite");
+      document.body.appendChild(nextPromptToast);
+    }
+    nextPromptToast.textContent = String(message || "");
+    nextPromptToast.hidden = false;
+    nextPromptToast.removeAttribute("hidden");
+    clearTimeout(showNextPromptToast.timer);
+    showNextPromptToast.timer = setTimeout(hideNextPromptToast, 2500);
+  }
+
+  function hideNextPromptToast() {
+    if (nextPromptToast) {
+      nextPromptToast.hidden = true;
+      nextPromptToast.setAttribute("hidden", "");
+    }
+  }
+
+  function readNextPromptQueueState() {
+    try {
+      const raw = sessionStorage.getItem(NEXT_PROMPT_QUEUE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === "object" ? parsed : { queued: false };
+    } catch {
+      return { queued: false };
+    }
+  }
+
+  function writeNextPromptQueueState(state) {
+    try {
+      sessionStorage.setItem(NEXT_PROMPT_QUEUE_KEY, JSON.stringify(state || { queued: false }));
+    } catch {
+      // Keep the in-memory queue if sessionStorage is unavailable.
+    }
+  }
+
+  function clearNextPromptQueue(reason) {
+    nextPromptQueueState = { queued: false, clearedAt: Date.now(), reason: String(reason || "clear") };
+    try {
+      sessionStorage.removeItem(NEXT_PROMPT_QUEUE_KEY);
+    } catch {
+      // Ignore storage cleanup failures.
+    }
+  }
+
+  function eventMatchesShortcut(event, shortcut) {
+    const parsed = parseShortcut(shortcut);
+    if (!parsed) return false;
+    if (Boolean(event.ctrlKey) !== parsed.ctrl) return false;
+    if (Boolean(event.altKey) !== parsed.alt) return false;
+    if (Boolean(event.shiftKey) !== parsed.shift) return false;
+    if (Boolean(event.metaKey) !== parsed.meta) return false;
+    return normalizeKeyName(event.key) === parsed.key;
+  }
+
+  function normalizeShortcut(value) {
+    const parsed = parseShortcut(value);
+    if (!parsed) return DEFAULT_SETTINGS.nextPromptQueueShortcut;
+    const parts = [];
+    if (parsed.ctrl) parts.push("Ctrl");
+    if (parsed.alt) parts.push("Alt");
+    if (parsed.shift) parts.push("Shift");
+    if (parsed.meta) parts.push("Meta");
+    parts.push(formatShortcutKey(parsed.key));
+    return parts.join("+");
+  }
+
+  function parseShortcut(value) {
+    const parts = String(value || "").split("+").map((part) => part.trim()).filter(Boolean);
+    if (!parts.length) return null;
+    const parsed = { ctrl: false, alt: false, shift: false, meta: false, key: "" };
+    for (const part of parts) {
+      const token = part.toLowerCase();
+      if (token === "ctrl" || token === "control") parsed.ctrl = true;
+      else if (token === "alt" || token === "option") parsed.alt = true;
+      else if (token === "shift") parsed.shift = true;
+      else if (token === "meta" || token === "cmd" || token === "command") parsed.meta = true;
+      else if (!parsed.key) parsed.key = normalizeKeyName(part);
+      else return null;
+    }
+    if (!parsed.key) return null;
+    return parsed;
+  }
+
+  function normalizeKeyName(key) {
+    const value = String(key || "").trim();
+    if (!value) return "";
+    const lower = value.toLowerCase();
+    if (lower === "escape" || lower === "esc") return "escape";
+    if (lower === "return") return "enter";
+    if (lower === " ") return "space";
+    if (lower.length === 1) return lower;
+    return lower;
+  }
+
+  function formatShortcutKey(key) {
+    if (key === "escape") return "Escape";
+    if (key === "enter") return "Enter";
+    if (key === "space") return "Space";
+    if (key === "tab") return "Tab";
+    return key.length === 1 ? key.toUpperCase() : key;
+  }
+
+  function arraysEqual(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((value, index) => value === b[index]);
+  }
+
+  function compactText(value, maxLength) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    const limit = Math.max(8, Number(maxLength) || 42);
+    return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+  }
+
+  function hashString(value) {
+    const text = String(value || "");
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash).toString(36);
   }
 
   function consumeApiTrimSignal() {
@@ -1031,7 +1487,7 @@
     if (!containsWithinScope(scope, el)) return false;
     if (el.closest("nav, aside, header, footer, [data-testid='conversation-sidebar']")) return false;
     if (el.matches("nav, aside, header, footer")) return false;
-    if (el.id === LOAD_MORE_ID || el.id === LEGACY_LOAD_MORE_ID || el.id === STATUS_ID) return false;
+    if (el.id === LOAD_MORE_ID || el.id === LEGACY_LOAD_MORE_ID || el.id === STATUS_ID || el.id === BRANCH_MAP_ID || el.id === NEXT_PROMPT_TOAST_ID) return false;
 
     const testId = String(el.getAttribute("data-testid") || "");
     if (testId.includes("conversation-turn")) return true;
@@ -1080,7 +1536,7 @@
   }
 
   function isExtensionUi(el) {
-    return Boolean(el && el.closest && el.closest(`#${LOAD_MORE_ID}, #${LEGACY_LOAD_MORE_ID}, #${STATUS_ID}, #${MATH_COPY_BUTTON_ID}, #${MATH_COPY_TOAST_ID}, [data-cgpt-lb-ui="true"]`));
+    return Boolean(el && el.closest && el.closest(`#${LOAD_MORE_ID}, #${LEGACY_LOAD_MORE_ID}, #${STATUS_ID}, #${MATH_COPY_BUTTON_ID}, #${MATH_COPY_TOAST_ID}, #${BRANCH_MAP_ID}, #${NEXT_PROMPT_TOAST_ID}, [data-cgpt-lb-ui="true"]`));
   }
 
   function detectActiveReply(turns) {
@@ -1602,10 +2058,20 @@
     style.textContent = `
       .${HIDDEN_CLASS},[data-cgpt-lb-hidden="true"]{display:none!important;content-visibility:hidden!important;}
       .${LIVE_PROTECTED_CLASS}{content-visibility:visible!important;contain-intrinsic-size:unset!important;}
-      #${MATH_COPY_BUTTON_ID}[hidden],#${MATH_COPY_TOAST_ID}[hidden]{display:none!important;}
+      #${MATH_COPY_BUTTON_ID}[hidden],#${MATH_COPY_TOAST_ID}[hidden],#${NEXT_PROMPT_TOAST_ID}[hidden]{display:none!important;}
       #${MATH_COPY_BUTTON_ID}{position:fixed;z-index:2147483001;padding:7px 10px;border:1px solid rgba(128,128,128,.38);border-radius:999px;background:color-mix(in srgb, Canvas 94%, CanvasText 6%);color:CanvasText;font:12px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 14px rgba(0,0,0,.18);cursor:pointer;contain:layout paint style;max-width:220px;white-space:nowrap;}
       #${MATH_COPY_BUTTON_ID}:hover{background:color-mix(in srgb, Canvas 86%, CanvasText 14%);}
       #${MATH_COPY_TOAST_ID}{position:fixed;right:14px;bottom:14px;z-index:2147483001;padding:7px 10px;border-radius:10px;background:color-mix(in srgb, CanvasText 86%, Canvas 14%);color:Canvas;font:12px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.22);contain:layout paint style;pointer-events:none;max-width:320px;}
+      #${NEXT_PROMPT_TOAST_ID}{position:fixed;right:14px;bottom:54px;z-index:2147483001;padding:7px 10px;border-radius:10px;background:color-mix(in srgb, CanvasText 84%, Canvas 16%);color:Canvas;font:12px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.20);contain:layout paint style;pointer-events:none;max-width:320px;}
+      #${BRANCH_MAP_ID}{position:fixed;right:14px;top:88px;z-index:2147482999;width:188px;max-height:min(46vh,420px);overflow:auto;padding:8px;border:1px solid rgba(128,128,128,.34);border-radius:8px;background:color-mix(in srgb, Canvas 92%, CanvasText 8%);color:CanvasText;font:11px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.16);contain:layout paint style;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-title{font-weight:700;margin-bottom:6px;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-list{display:grid;gap:3px;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-node{display:grid;grid-template-columns:16px minmax(0,1fr) 24px;align-items:center;gap:4px;min-height:18px;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-rail{font-size:12px;text-align:center;color:color-mix(in srgb, CanvasText 70%, Canvas 30%);}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-count{text-align:right;color:color-mix(in srgb, CanvasText 62%, Canvas 38%);}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-user .cgpt-lb-branch-rail{color:#3b82f6;}
+      #${BRANCH_MAP_ID} .cgpt-lb-branch-assistant .cgpt-lb-branch-rail{color:#16a34a;}
       @supports (content-visibility:auto){.${CONTAINED_CLASS}:not(.${HIDDEN_CLASS}){content-visibility:auto;contain-intrinsic-size:auto 720px;}}
     `;
     const target = document.head || document.documentElement;
@@ -2576,14 +3042,18 @@
     if (navigationTimer) clearInterval(navigationTimer);
     if (maintenanceTimer) clearInterval(maintenanceTimer);
     if (activeReplyWatchdogTimer) clearInterval(activeReplyWatchdogTimer);
+    if (nextPromptQueueTimer) clearInterval(nextPromptQueueTimer);
     if (autoCollapseTimer) clearTimeout(autoCollapseTimer);
     if (scanTimer) clearTimeout(scanTimer);
     if (mathSelectionTimer) clearTimeout(mathSelectionTimer);
     hideMathCopyButton();
     hideMathCopyToast();
+    hideNextPromptToast();
+    removeBranchMapPanel();
     navigationTimer = 0;
     maintenanceTimer = 0;
     activeReplyWatchdogTimer = 0;
+    nextPromptQueueTimer = 0;
     autoCollapseTimer = 0;
     maintenanceScheduled = false;
     scanTimer = 0;

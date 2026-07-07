@@ -10,7 +10,7 @@ function createElement(id) {
   const listeners = {};
   return {
     id,
-    type: id === "uiLanguage" ? "select" : id.endsWith("Enabled") || id === "enabled" || id === "showStatus" || id === "debug" ? "checkbox" : "button",
+    type: id === "languageMode" ? "select" : id.endsWith("Enabled") || id === "enabled" || id === "showStatus" || id === "debug" ? "checkbox" : "button",
     value: "",
     checked: false,
     textContent: "",

@@ -86,7 +86,8 @@
 }
 
 #cgpt-lb-math-copy-v152[hidden],
-#cgpt-lb-math-copy-toast-v152[hidden] {
+#cgpt-lb-math-copy-toast-v152[hidden],
+#cgpt-lb-next-prompt-toast-v152[hidden] {
   display: none !important;
 }
 
@@ -124,4 +125,81 @@
   contain: layout paint style;
   pointer-events: none;
   max-width: 320px;
+}
+
+#cgpt-lb-next-prompt-toast-v152 {
+  position: fixed;
+  right: 14px;
+  bottom: 54px;
+  z-index: 2147483001;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, CanvasText 84%, Canvas 16%);
+  color: Canvas;
+  font: 12px/1.25 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 3px 16px rgba(0, 0, 0, 0.20);
+  contain: layout paint style;
+  pointer-events: none;
+  max-width: 320px;
+}
+
+#cgpt-lb-branch-map-v152 {
+  position: fixed;
+  right: 14px;
+  top: 88px;
+  z-index: 2147482999;
+  width: 188px;
+  max-height: min(46vh, 420px);
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.34);
+  border-radius: 8px;
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+  color: CanvasText;
+  font: 11px/1.25 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 3px 16px rgba(0, 0, 0, 0.16);
+  contain: layout paint style;
+}
+
+#cgpt-lb-branch-map-v152 .cgpt-lb-branch-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+#cgpt-lb-branch-map-v152 .cgpt-lb-branch-list {
+  display: grid;
+  gap: 3px;
+}
+
+#cgpt-lb-branch-map-v152 .cgpt-lb-branch-node {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+}
+
+#cgpt-lb-branch-map-v152 .cgpt-lb-branch-rail {
+  font-size: 12px;
+  text-align: center;
+  color: color-mix(in srgb, CanvasText 70%, Canvas 30%);
+}
+
+#cgpt-lb-branch-map-v152 .cgpt-lb-branch-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#cgpt-lb-branch-map-v152 .cgpt-lb-branch-count {
+  text-align: right;
+  color: color-mix(in srgb, CanvasText 62%, Canvas 38%);
+}
+
+#cgpt-lb-branch-map-v152 .cgpt-lb-branch-user .cgpt-lb-branch-rail {
+  color: #3b82f6;
+}
+
+#cgpt-lb-branch-map-v152 .cgpt-lb-branch-assistant .cgpt-lb-branch-rail {
+  color: #16a34a;
 }

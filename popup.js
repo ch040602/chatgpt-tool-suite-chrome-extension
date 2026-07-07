@@ -19,6 +19,9 @@
     mathCopyAutoOnCopy: true,
     mathCopyShowSelectionButton: true,
     mathCopyPreferPngFallback: true,
+    branchTrackerEnabled: true,
+    nextPromptQueueEnabled: true,
+    nextPromptQueueShortcut: "Tab",
     showStatus: false,
     debug: false
   });
@@ -33,7 +36,7 @@
     "apiCacheMaxKb",
     "maintenanceIntervalSec"
   ]);
-  const TEXT_SETTING_IDS = new Set([]);
+  const TEXT_SETTING_IDS = new Set(["nextPromptQueueShortcut"]);
   const saved = document.getElementById("saved");
   const metricMain = document.getElementById("metricMain");
   const metricSub = document.getElementById("metricSub");
@@ -99,6 +102,9 @@
       mathCopyAutoOnCopyLabel: "Ctrl/Cmd+C 수식 자동 보정",
       mathCopyShowSelectionButtonLabel: "드래그 후 수식 복사 버튼",
       mathCopyPreferPngFallbackLabel: "PPT 안전 이미지 우선",
+      branchTrackerEnabledLabel: "브랜치 경로 표시",
+      nextPromptQueueEnabledLabel: "다음 질문 대기 전송",
+      nextPromptQueueShortcutLabel: "대기 전송 단축키",
       showStatusLabel: "상태 배지 표시",
       maintenanceEnabledLabel: "대화 중 자동 정리",
       autoCollapseLoadedMessagesLabel: "불러온 과거 메시지 주기적 접기",
@@ -167,6 +173,9 @@
       mathCopyAutoOnCopyLabel: "Auto-correct formula Ctrl/Cmd+C",
       mathCopyShowSelectionButtonLabel: "Show formula copy button after drag",
       mathCopyPreferPngFallbackLabel: "Prefer PPT-safe image",
+      branchTrackerEnabledLabel: "Show branch path",
+      nextPromptQueueEnabledLabel: "Queue next prompt",
+      nextPromptQueueShortcutLabel: "Queue shortcut",
       showStatusLabel: "Show status badge",
       maintenanceEnabledLabel: "Auto cleanup during chat",
       autoCollapseLoadedMessagesLabel: "Periodically collapse loaded older messages",
@@ -237,7 +246,7 @@
   function storageSet(value) {
     return new Promise((resolve) => {
       if (!hasChromeStorage()) return resolve(false);
-      const payload = value && typeof value === "object" ? { ...value, "cgptLongChatLoader.defaultsVersion": "1.5.2" } : value;
+      const payload = value && typeof value === "object" ? { ...value, "cgptLongChatLoader.defaultsVersion": "1.5.3" } : value;
       chrome.storage.local.set(payload, () => resolve(!chrome.runtime.lastError));
     });
   }
@@ -276,7 +285,7 @@
       if (!el) continue;
       if (el.type === "checkbox") next[id] = el.checked;
       else if (NUMBER_SETTING_IDS.has(id)) next[id] = clampInt(el.value, Number(el.min), Number(el.max), DEFAULT_SETTINGS[id]);
-      else if (TEXT_SETTING_IDS.has(id)) next[id] = normalizeGitHubRepo(el.value, DEFAULT_SETTINGS[id]);
+      else if (TEXT_SETTING_IDS.has(id)) next[id] = normalizeTextSetting(id, el.value, DEFAULT_SETTINGS[id]);
       else next[id] = el.value;
     }
 
@@ -296,6 +305,9 @@
     const source = value && typeof value === "object" ? value : {};
     const nested = source.settings && typeof source.settings === "object" ? source.settings : {};
     let merged = { ...DEFAULT_SETTINGS, ...nested, ...source };
+    if (!Object.prototype.hasOwnProperty.call(source, "languageMode") && source["cgptLongChatLoader.uiLanguage"]) {
+      merged.languageMode = source["cgptLongChatLoader.uiLanguage"];
+    }
     const defaultsVersion = String(source.cgptLongChatLoaderDefaultsVersion || source["cgptLongChatLoader.defaultsVersion"] || "");
     const looksLikeOldDefault =
       (!Object.prototype.hasOwnProperty.call(source, "visibleTurns") || Number(source.visibleTurns) === 3) &&
@@ -303,7 +315,7 @@
       (!Object.prototype.hasOwnProperty.call(source, "prefetchBatches") || Number(source.prefetchBatches) === 1) &&
       (!Object.prototype.hasOwnProperty.call(source, "apiCacheMaxKb") || Number(source.apiCacheMaxKb) === 512) &&
       (!Object.prototype.hasOwnProperty.call(source, "maintenanceIntervalSec") || Number(source.maintenanceIntervalSec) === 45);
-    if (defaultsVersion !== "1.5.2" && looksLikeOldDefault) {
+    if (defaultsVersion !== "1.5.3" && looksLikeOldDefault) {
       merged = {
         ...merged,
         visibleTurns: 2,
@@ -336,6 +348,9 @@
       mathCopyAutoOnCopy: merged.mathCopyAutoOnCopy === false ? false : true,
       mathCopyShowSelectionButton: merged.mathCopyShowSelectionButton === false ? false : true,
       mathCopyPreferPngFallback: merged.mathCopyPreferPngFallback === false ? false : true,
+      branchTrackerEnabled: merged.branchTrackerEnabled === false ? false : true,
+      nextPromptQueueEnabled: merged.nextPromptQueueEnabled === false ? false : true,
+      nextPromptQueueShortcut: normalizeShortcut(merged.nextPromptQueueShortcut || DEFAULT_SETTINGS.nextPromptQueueShortcut),
       showStatus: Boolean(merged.showStatus),
       debug: Boolean(merged.debug)
     };
@@ -363,8 +378,16 @@
       const el = document.getElementById(id);
       if (el && typeof text === "string") el.textContent = text;
     }
-    if (gitUpdateStatus && gitUpdateStatus.dataset.state === "idle") gitUpdateStatus.textContent = dict.updateIdle;
-    if (mathCopyStatus && mathCopyStatus.dataset.state === "idle") mathCopyStatus.textContent = dict.mathCopyStatusIdle;
+    if (gitUpdateStatus && getDatasetState(gitUpdateStatus) === "idle") gitUpdateStatus.textContent = dict.updateIdle;
+    if (mathCopyStatus && getDatasetState(mathCopyStatus) === "idle") mathCopyStatus.textContent = dict.mathCopyStatusIdle;
+  }
+
+  function getDatasetState(el) {
+    return el && el.dataset ? el.dataset.state : "";
+  }
+
+  function setDatasetState(el, state) {
+    if (el && el.dataset) el.dataset.state = state;
   }
 
   function clampInt(value, min, max, fallback) {
@@ -768,7 +791,7 @@
   function renderUpdateIdle() {
     latestUpdateInfo = null;
     if (gitUpdateStatus) {
-      gitUpdateStatus.dataset.state = "idle";
+      setDatasetState(gitUpdateStatus, "idle");
       gitUpdateStatus.textContent = t("updateIdle");
     }
     clearUpdateLines();
@@ -1031,6 +1054,9 @@
       mathCopyAutoOnCopy: true,
       mathCopyShowSelectionButton: true,
       mathCopyPreferPngFallback: true,
+      branchTrackerEnabled: true,
+      nextPromptQueueEnabled: true,
+      nextPromptQueueShortcut: "Tab",
       showStatus: false
     });
     renderSettings(next);
@@ -1061,7 +1087,7 @@
 
   function setUpdateStatus(main, detail) {
     if (!gitUpdateStatus) return;
-    gitUpdateStatus.dataset.state = "custom";
+    setDatasetState(gitUpdateStatus, "custom");
     gitUpdateStatus.textContent = detail ? `${main} · ${detail}` : main;
   }
 
@@ -1097,6 +1123,58 @@
     const el = document.getElementById(id);
     if (!el) return DEFAULT_SETTINGS[id];
     return el.type === "checkbox" ? el.checked : el.value;
+  }
+
+  function normalizeTextSetting(id, value, fallback) {
+    if (id === "nextPromptQueueShortcut") return normalizeShortcut(value || fallback);
+    return String(value || fallback || "").trim();
+  }
+
+  function normalizeShortcut(value) {
+    const parsed = parseShortcut(value);
+    if (!parsed) return DEFAULT_SETTINGS.nextPromptQueueShortcut;
+    const parts = [];
+    if (parsed.ctrl) parts.push("Ctrl");
+    if (parsed.alt) parts.push("Alt");
+    if (parsed.shift) parts.push("Shift");
+    if (parsed.meta) parts.push("Meta");
+    parts.push(formatShortcutKey(parsed.key));
+    return parts.join("+");
+  }
+
+  function parseShortcut(value) {
+    const parts = String(value || "").split("+").map((part) => part.trim()).filter(Boolean);
+    if (!parts.length) return null;
+    const parsed = { ctrl: false, alt: false, shift: false, meta: false, key: "" };
+    for (const part of parts) {
+      const token = part.toLowerCase();
+      if (token === "ctrl" || token === "control") parsed.ctrl = true;
+      else if (token === "alt" || token === "option") parsed.alt = true;
+      else if (token === "shift") parsed.shift = true;
+      else if (token === "meta" || token === "cmd" || token === "command") parsed.meta = true;
+      else if (!parsed.key) parsed.key = normalizeKeyName(part);
+      else return null;
+    }
+    return parsed.key ? parsed : null;
+  }
+
+  function normalizeKeyName(key) {
+    const value = String(key || "").trim();
+    if (!value) return "";
+    const lower = value.toLowerCase();
+    if (lower === "escape" || lower === "esc") return "escape";
+    if (lower === "return") return "enter";
+    if (lower === " ") return "space";
+    if (lower.length === 1) return lower;
+    return lower;
+  }
+
+  function formatShortcutKey(key) {
+    if (key === "escape") return "Escape";
+    if (key === "enter") return "Enter";
+    if (key === "space") return "Space";
+    if (key === "tab") return "Tab";
+    return key.length === 1 ? key.toUpperCase() : key;
   }
 
   function normalizeGitHubRepo(value, fallback) {
