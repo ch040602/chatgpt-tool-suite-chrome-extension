@@ -468,6 +468,77 @@ async function loadContent(storageData = {}, initialSessionValues = {}, options 
   assert.match(graph.textContent, /분기 없음/, "expanded branch panel does not list every prompt without a branch");
   assert.equal(graph.querySelectorAll(".cgpt-lb-branch-node-action").length, 0, "expanded no-branch panel stays node-free");
 
+  const staleBranchPage = await loadContent({
+    branchTrackerEnabled: true,
+    branchTrackerShortcut: "Alt+B",
+    nextPromptQueueEnabled: false
+  }, {
+    "cgptLongChatLoader.branchPaths.v1": JSON.stringify({
+      "https://chatgpt.com/c/example": {
+        snapshots: [
+          {
+            ids: ["old-u1", "old-a1", "old-u2", "old-a2"],
+            nodes: [
+              { id: "old-u1", role: "user", index: 0, preview: "Question 1" },
+              { id: "old-a1", role: "assistant", index: 1, preview: "Answer 1" },
+              { id: "old-u2", role: "user", index: 2, preview: "Question 2" },
+              { id: "old-a2", role: "assistant", index: 3, preview: "Answer 2" }
+            ]
+          },
+          {
+            ids: ["old-u1", "old-a1", "fake-u2", "fake-a2"],
+            nodes: [
+              { id: "old-u1", role: "user", index: 0, preview: "Question 1" },
+              { id: "old-a1", role: "assistant", index: 1, preview: "Answer 1" },
+              { id: "fake-u2", role: "user", index: 2, preview: "Fake branch prompt" },
+              { id: "fake-a2", role: "assistant", index: 3, preview: "Fake branch answer" }
+            ]
+          }
+        ]
+      }
+    })
+  });
+  const staleBranchGraph = staleBranchPage.document.getElementById("cgpt-lb-branch-map-v152");
+  assert.match(staleBranchGraph.textContent, /분기 없음/, "old pre-schema branch snapshots are discarded");
+  assert.equal(staleBranchGraph.querySelectorAll(".cgpt-lb-branch-node-action").length, 0);
+
+  const answerDriftPage = await loadContent({
+    branchTrackerEnabled: true,
+    branchTrackerShortcut: "Alt+B",
+    nextPromptQueueEnabled: false
+  }, {
+    "cgptLongChatLoader.branchPaths.v1": JSON.stringify({
+      "https://chatgpt.com/c/example": {
+        schemaVersion: 2,
+        snapshots: [
+          {
+            signature: "q1:a1|q2:partial",
+            ids: ["u1", "a1", "u2", "a2-partial"],
+            nodes: [
+              { id: "u1", role: "user", index: 0, preview: "Question 1" },
+              { id: "a1", role: "assistant", index: 1, preview: "Answer 1" },
+              { id: "u2", role: "user", index: 2, preview: "Question 2" },
+              { id: "a2-partial", role: "assistant", index: 3, preview: "Partial answer" }
+            ]
+          },
+          {
+            signature: "q1:a1|q2:final",
+            ids: ["u1", "a1", "u2", "a2-final"],
+            nodes: [
+              { id: "u1", role: "user", index: 0, preview: "Question 1" },
+              { id: "a1", role: "assistant", index: 1, preview: "Answer 1" },
+              { id: "u2", role: "user", index: 2, preview: "Question 2" },
+              { id: "a2-final", role: "assistant", index: 3, preview: "Final answer" }
+            ]
+          }
+        ]
+      }
+    })
+  });
+  const answerDriftGraph = answerDriftPage.document.getElementById("cgpt-lb-branch-map-v152");
+  assert.match(answerDriftGraph.textContent, /분기 없음/, "answer/id drift for the same prompt is not a branch");
+  assert.equal(answerDriftGraph.querySelectorAll(".cgpt-lb-branch-node-action").length, 0);
+
   const event = createKeyEvent("Tab", page.composer);
   page.document.dispatchEvent(event);
 
@@ -557,6 +628,7 @@ async function loadContent(storageData = {}, initialSessionValues = {}, options 
 
   const branchState = {
     "https://chatgpt.com/c/example": {
+      schemaVersion: 2,
       snapshots: [
         {
           ids: ["u1", "a1", "u2", "a2"],
@@ -655,6 +727,7 @@ async function loadContent(storageData = {}, initialSessionValues = {}, options 
   }, {
     "cgptLongChatLoader.branchPaths.v1": JSON.stringify({
       "https://chatgpt.com/c/example": {
+        schemaVersion: 2,
         snapshots: [
           {
             ids: ["u1", "a1", "short-user-branch"],

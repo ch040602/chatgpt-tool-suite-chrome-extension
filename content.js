@@ -50,6 +50,7 @@
   const TRIM_MARKER_KEY = "cgptLongChatLoader.trimMarkers.v1";
   const DEBUG_LOG_KEY = "cgptLongChatLoader.debugLog.v1";
   const BRANCH_PATH_KEY = "cgptLongChatLoader.branchPaths.v1";
+  const BRANCH_PATH_SCHEMA_VERSION = 2;
   const BRANCH_PANEL_COLLAPSED_KEY = "cgptLongChatLoader.branchPanelCollapsed.v1";
   const NEXT_PROMPT_QUEUE_KEY = "cgptLongChatLoader.nextPromptQueue.v1";
   const NEXT_PROMPT_PANEL_COLLAPSED_KEY = "cgptLongChatLoader.nextPromptPanelCollapsed.v1";
@@ -814,18 +815,26 @@
 
     const state = readBranchPathState();
     const routeKey = currentRouteKey();
-    const routeState = state[routeKey] && typeof state[routeKey] === "object"
+    let routeState = state[routeKey] && typeof state[routeKey] === "object"
       ? state[routeKey]
       : { snapshots: [] };
-    const ids = path.map((node) => node.id);
+    if (routeState.schemaVersion !== BRANCH_PATH_SCHEMA_VERSION) {
+      routeState = { snapshots: [] };
+    }
+    const compactNodes = path.map(compactBranchNode);
+    const ids = compactNodes.map((node) => node.id);
+    const currentPairs = normalizePromptAnswerPairs(compactNodes);
+    const signature = branchPairSignature(currentPairs);
     const last = Array.isArray(routeState.snapshots) ? routeState.snapshots[routeState.snapshots.length - 1] : null;
-    if (!last || !arraysEqual(last.ids, ids)) {
+    if (signature && !isReplyActiveInDom() && (!last || last.signature !== signature)) {
       routeState.snapshots = (Array.isArray(routeState.snapshots) ? routeState.snapshots : [])
-        .concat({ ids, nodes: path.map(compactBranchNode), at: Date.now() })
+        .concat({ ids, nodes: compactNodes, signature, at: Date.now() })
         .slice(-MAX_BRANCH_SNAPSHOTS);
     }
+    routeState.schemaVersion = BRANCH_PATH_SCHEMA_VERSION;
     routeState.current = ids;
-    routeState.currentNodes = path.map(compactBranchNode);
+    routeState.currentNodes = compactNodes;
+    routeState.currentSignature = signature;
     routeState.updatedAt = Date.now();
     state[routeKey] = routeState;
     writeBranchPathState(state);
@@ -1251,7 +1260,7 @@
     for (const pairs of pairPaths) {
       pairs.forEach((pair, index) => {
         if (!byIndex.has(index)) byIndex.set(index, new Map());
-        byIndex.get(index).set(pair.key, pair);
+        byIndex.get(index).set(pair.promptKey, pair);
       });
     }
 
@@ -1289,8 +1298,12 @@
         continue;
       }
       if (node.role === "assistant" && pendingPrompt) {
+        const promptKey = branchTextKey(pendingPrompt.preview);
+        const answerKey = branchTextKey(node.preview);
         pairs.push({
           key: `${pendingPrompt.id}\t${node.id}`,
+          promptKey,
+          answerKey,
           promptId: pendingPrompt.id,
           answerId: node.id,
           promptPreview: pendingPrompt.preview,
@@ -1310,33 +1323,45 @@
       if (!pairs[branchIndex]) continue;
       const candidate = pairs[branchIndex - 1];
       if (!candidate) return null;
-      if (parent && parent.key !== candidate.key) return null;
+      if (parent && parent.promptKey !== candidate.promptKey) return null;
       parent = candidate;
     }
     return parent;
   }
 
   function uniqueBranchPairs(pairs) {
-    const seen = new Set();
-    const result = [];
+    const byPrompt = new Map();
     for (const pair of pairs) {
-      const key = pair && pair.key;
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      result.push({
-        key,
+      if (!pair || !pair.promptKey) continue;
+      byPrompt.set(pair.promptKey, {
+        key: pair.key,
+        promptKey: pair.promptKey,
         promptId: String(pair.promptId || ""),
         answerId: String(pair.answerId || ""),
         promptPreview: compactText(pair.promptPreview, 80),
         answerPreview: compactText(pair.answerPreview, 64)
       });
     }
-    return result;
+    return Array.from(byPrompt.values());
   }
 
   function pairTargetIds(pair) {
     if (!pair) return [];
     return [pair.promptId, pair.answerId].filter(Boolean);
+  }
+
+  function branchPairSignature(pairs) {
+    return (Array.isArray(pairs) ? pairs : [])
+      .map((pair) => pair && `${pair.promptKey}:${pair.answerKey}`)
+      .filter(Boolean)
+      .join("|");
+  }
+
+  function branchTextKey(value) {
+    return compactText(value, 120)
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   function jumpToBranchTargets(targetIds) {
