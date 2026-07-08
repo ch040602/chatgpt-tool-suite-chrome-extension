@@ -1560,24 +1560,66 @@
     if (!(composer instanceof HTMLElement)) return;
     const value = String(text || "");
     composer.focus();
-    if ("value" in composer && typeof composer.value === "string") composer.value = value;
-    else composer.textContent = value;
-    try {
-      composer.dispatchEvent(new Event("input", { bubbles: true }));
-    } catch {
-      // Non-critical input notification failure.
+    const isTextControl = "value" in composer && typeof composer.value === "string";
+    if (isTextControl) {
+      try {
+        const proto = Object.getPrototypeOf(composer);
+        const descriptor = proto && Object.getOwnPropertyDescriptor(proto, "value");
+        if (descriptor && typeof descriptor.set === "function") descriptor.set.call(composer, value);
+        else composer.value = value;
+      } catch {
+        composer.value = value;
+      }
+    } else {
+      const contentEditable = String(composer.getAttribute("contenteditable") || "").toLowerCase() === "true";
+      if (contentEditable && document.execCommand) {
+        try {
+          document.execCommand("selectAll", false, null);
+          document.execCommand("insertText", false, value);
+        } catch {
+          // Fall back to direct text assignment below.
+        }
+      }
+      if (readComposerText(composer) !== value) composer.textContent = value;
     }
+    dispatchComposerInputEvents(composer, value);
   }
 
   function findSendButton() {
-    const buttons = safeQueryAll("button", document.body || document.documentElement);
+    const buttons = safeQueryAll('button, [role="button"]', document.body || document.documentElement);
     return buttons.find((button) => {
       if (isExtensionUi(button) || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
       const testId = String(button.getAttribute("data-testid") || "").toLowerCase();
       const label = String(button.getAttribute("aria-label") || button.textContent || "").toLowerCase();
+      const type = String(button.getAttribute("type") || button.type || "").toLowerCase();
       if (testId.includes("stop") || label.includes("stop") || label.includes("중지")) return false;
-      return testId.includes("send") || label.includes("send") || label.includes("전송") || label.includes("보내");
+      return testId.includes("send")
+        || testId.includes("submit")
+        || label.includes("send")
+        || label.includes("submit")
+        || label.includes("전송")
+        || label.includes("보내")
+        || type === "submit";
     }) || null;
+  }
+
+  function dispatchComposerInputEvents(composer, value) {
+    const events = [
+      () => typeof InputEvent === "function"
+        ? new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: value })
+        : new Event("beforeinput", { bubbles: true, cancelable: true }),
+      () => typeof InputEvent === "function"
+        ? new InputEvent("input", { bubbles: true, inputType: "insertText", data: value })
+        : new Event("input", { bubbles: true }),
+      () => new Event("change", { bubbles: true })
+    ];
+    for (const createEvent of events) {
+      try {
+        composer.dispatchEvent(createEvent());
+      } catch {
+        // Non-critical input notification failure.
+      }
+    }
   }
 
   function hasRateLimitNotice() {
@@ -2903,7 +2945,7 @@
       #${MATH_COPY_BUTTON_ID}{position:fixed;z-index:2147483001;padding:7px 10px;border:1px solid rgba(128,128,128,.38);border-radius:999px;background:color-mix(in srgb, Canvas 94%, CanvasText 6%);color:CanvasText;font:12px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 14px rgba(0,0,0,.18);cursor:pointer;contain:layout paint style;max-width:220px;white-space:nowrap;}
       #${MATH_COPY_BUTTON_ID}:hover{background:color-mix(in srgb, Canvas 86%, CanvasText 14%);}
       #${MATH_COPY_TOAST_ID}{position:fixed;right:14px;bottom:14px;z-index:2147483001;padding:7px 10px;border-radius:10px;background:color-mix(in srgb, CanvasText 86%, Canvas 14%);color:Canvas;font:12px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.22);contain:layout paint style;pointer-events:none;max-width:320px;}
-      #${NEXT_PROMPT_TOAST_ID}{position:fixed;right:14px;bottom:54px;z-index:2147483001;padding:7px 10px;border-radius:10px;background:color-mix(in srgb, CanvasText 84%, Canvas 16%);color:Canvas;font:12px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.20);contain:layout paint style;pointer-events:none;max-width:320px;}
+      #${NEXT_PROMPT_TOAST_ID}{position:fixed;left:14px;top:14px;z-index:2147483001;padding:7px 10px;border-radius:10px;background:color-mix(in srgb, CanvasText 84%, Canvas 16%);color:Canvas;font:12px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.20);contain:layout paint style;pointer-events:none;max-width:300px;}
       #${NEXT_PROMPT_TOGGLE_BUTTON_ID}{position:fixed;left:14px;top:54px;z-index:2147483000;padding:6px 9px;border:1px solid rgba(128,128,128,.34);border-radius:999px;background:color-mix(in srgb, Canvas 92%, CanvasText 8%);color:CanvasText;font:11px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.14);cursor:pointer;contain:layout paint style;}
       #${NEXT_PROMPT_PANEL_ID}{position:fixed;left:14px;top:88px;z-index:2147482999;width:300px;max-height:min(56vh,520px);overflow:auto;padding:9px;border:1px solid rgba(128,128,128,.34);border-radius:8px;background:color-mix(in srgb, Canvas 93%, CanvasText 7%);color:CanvasText;font:11px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 3px 16px rgba(0,0,0,.16);contain:layout paint style;}
       #${NEXT_PROMPT_PANEL_ID}.cgpt-lb-next-mini-panel{width:auto;min-width:96px;max-width:138px;min-height:44px;overflow:hidden;padding:7px 9px;border-radius:10px;cursor:pointer;}

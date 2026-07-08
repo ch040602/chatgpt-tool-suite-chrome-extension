@@ -625,6 +625,22 @@ async function loadContent(storageData = {}, initialSessionValues = {}, options 
   assert.equal(queuePanel.classList.contains("cgpt-lb-next-mini-panel"), true, "queue toggle button collapses the panel");
   queueToggleButton.click();
   assert.equal(queuePanel.classList.contains("cgpt-lb-next-mini-panel"), false, "queue toggle button reopens the panel");
+  const runtimeStyle = queuePage.document.getElementById("cgpt-lb-runtime-style-v152");
+  assert.match(runtimeStyle.textContent, /#cgpt-lb-next-prompt-toast-v152\{position:fixed;left:14px;top:14px;/, "queue toast appears directly above the queue visibility button");
+
+  const submitOnlyPage = await loadContent({
+    branchTrackerEnabled: false,
+    nextPromptQueueEnabled: true,
+    nextPromptQueueShortcut: "Tab"
+  });
+  submitOnlyPage.sendButton.removeAttribute("data-testid");
+  submitOnlyPage.sendButton.removeAttribute("aria-label");
+  submitOnlyPage.sendButton.setAttribute("type", "submit");
+  submitOnlyPage.document.dispatchEvent(createKeyEvent("Tab", submitOnlyPage.composer));
+  submitOnlyPage.sendButton.clickCount = 0;
+  submitOnlyPage.busy.remove();
+  submitOnlyPage.intervals.forEach((callback) => callback());
+  assert.equal(submitOnlyPage.sendButton.clickCount, 1, "queued prompt auto-sends through a submit-only ChatGPT send button");
 
   const branchState = {
     "https://chatgpt.com/c/example": {
