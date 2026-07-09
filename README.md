@@ -89,6 +89,9 @@ For developer-mode/unpacked installs, Chrome cannot replace the local extension 
 
 ## Installation
 
+No build step is required. The repository root is the unpacked Chrome extension
+folder.
+
 1. Download the latest release ZIP.
 2. Extract the ZIP.
 3. Open `chrome://extensions`.
@@ -97,6 +100,43 @@ For developer-mode/unpacked installs, Chrome cannot replace the local extension 
 6. Select the extracted extension folder.
 7. Refresh existing ChatGPT tabs.
 8. Open the popup and confirm `API patch: MAIN 1.5.3`.
+
+### Install From This Repository
+
+Use this path when you are installing from GitHub without a packaged release:
+
+1. Open the repository page:
+   `https://github.com/ch040602/chatgpt-tool-suite-chrome-extension`
+2. Click **Code** -> **Download ZIP**.
+3. Extract the ZIP.
+4. In `chrome://extensions`, enable **Developer mode** and click **Load unpacked**.
+5. Select the folder that directly contains `manifest.json`.
+6. Refresh ChatGPT tabs that were already open.
+
+To update an unpacked install later, download the newer ZIP, extract it to the
+same folder, then press the reload button for the extension in
+`chrome://extensions`.
+
+### Default Profile
+
+The extension ships with the same defaults I use day to day, so a fresh install
+is ready without extra setup:
+
+- Korean popup language by default.
+- Long-chat trimming and network-safe mode enabled.
+- Recent turns shown first: `2`.
+- Load-more batch: `2`.
+- API prefetch batches: `0`.
+- Response micro-cache entries: `1`, item limit: `256 KB`.
+- Periodic cleanup and auto-collapse for older loaded messages enabled.
+- Branch path panel enabled with `Alt+B`.
+- Queued prompt sending enabled with `Tab`.
+- Queue panel open/collapse shortcut: `Alt+Q`.
+- Office formula copy enabled, including PNG fallback.
+- Status badge and debug logging disabled.
+
+If you changed settings before, click **Fast first-load preset** in the popup to
+restore the performance-oriented profile, then refresh the ChatGPT tab.
 
 ## Recommended settings
 
